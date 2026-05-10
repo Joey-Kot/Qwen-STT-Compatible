@@ -7,9 +7,8 @@ import logging
 import asyncio
 import math
 from pathlib import Path
-from typing import Optional, Tuple, List, Union, Any, Dict
+from typing import Optional, Tuple, List, Any, Dict
 from contextvars import ContextVar, copy_context
-from http import HTTPStatus
 from concurrent.futures import ThreadPoolExecutor
 
 import ffmpeg
@@ -18,7 +17,6 @@ import subprocess
 import json
 import wave
 import contextlib
-from dashscope.audio.asr import Recognition
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status, Form
 from fastapi.responses import JSONResponse
@@ -74,32 +72,19 @@ dashscope.api_key = dashscope_api_key
 bearer_scheme = HTTPBearer()
 executor = ThreadPoolExecutor(max_workers=max(4, (os.cpu_count() or 1) * 2))
 
-DEFAULT_MODEL = "paraformer-realtime-v2"
+DEFAULT_MODEL = "qwen3-asr-flash"
 
 MODEL_ALIASES = {
-    "8k-v1": "paraformer-realtime-8k-v1",
-    "8k-v2": "paraformer-realtime-8k-v2",
-    "v1": "paraformer-realtime-v1",
-    "v2": "paraformer-realtime-v2",
     "asr": "qwen3-asr-flash",
     "asr-0908": "qwen3-asr-flash-2025-09-08",
 }
 MODEL_ALIASES = {k.lower(): v.lower() for k, v in MODEL_ALIASES.items()}
 
 MODEL_RATES = {
-    "paraformer-realtime-8k-v1": 8000,
-    "paraformer-realtime-8k-v2": 8000,
-    "paraformer-realtime-v1": 16000,
-    "paraformer-realtime-v2": 48000,
     "qwen3-asr-flash": 16000,
     "qwen3-asr-flash-2025-09-08": 16000,
 }
 MODEL_RATES = {k.lower(): v for k, v in MODEL_RATES.items()}
-
-QWEN_ASR_MODELS = {
-    "qwen3-asr-flash",
-    "qwen3-asr-flash-2025-09-08",
-}
 
 
 def get_safe_filename(filename: str) -> str:
@@ -181,186 +166,231 @@ def preconvert_to_wav(input_path: str, wav_path: str, sample_rate: int) -> None:
     )
 
 
-def remove_long_silences_from_wav(
+def _ffmpeg_mean_volume_db(path: str) -> Tuple[Optional[float], Optional[float]]:
+    try:
+        cmd = ["ffmpeg", "-i", path, "-af", "volumedetect", "-f", "null", "-"]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stderr = p.stderr or ""
+        mean = None
+        maxv = None
+        m_mean = re.search(r"mean_volume:\s*([-\d.]+)\s*dB", stderr)
+        if m_mean:
+            try:
+                mean = float(m_mean.group(1))
+            except Exception:
+                mean = None
+        m_max = re.search(r"max_volume:\s*([-\d.]+)\s*dB", stderr)
+        if m_max:
+            try:
+                maxv = float(m_max.group(1))
+            except Exception:
+                maxv = None
+        return mean, maxv
+    except Exception:
+        return None, None
+
+
+def _ffmpeg_silencedetect(path: str, noise_db: float, min_s: float) -> List[Tuple[float, float]]:
+    intervals: List[Tuple[float, float]] = []
+    try:
+        af = f"silencedetect=noise={noise_db}dB:d={min_s}"
+        cmd = ["ffmpeg", "-i", path, "-af", af, "-f", "null", "-"]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stderr = p.stderr or ""
+        starts = []
+        ends = []
+        for line in stderr.splitlines():
+            line = line.strip()
+            if "silence_start:" in line:
+                m = re.search(r"silence_start:\s*([0-9.]+)", line)
+                if m:
+                    starts.append(float(m.group(1)))
+            if "silence_end:" in line:
+                m = re.search(r"silence_end:\s*([0-9.]+)", line)
+                if m:
+                    ends.append(float(m.group(1)))
+        si = 0
+        ei = 0
+        while si < len(starts) and ei < len(ends):
+            if ends[ei] >= starts[si]:
+                intervals.append((starts[si], ends[ei]))
+                si += 1
+                ei += 1
+            else:
+                ei += 1
+        return intervals
+    except Exception:
+        return []
+
+
+def _detect_silence_intervals(
+    wav_path: str,
+    threshold_ms: int = 700,
+    silence_thresh: Optional[int] = None,
+) -> List[Tuple[float, float]]:
+    min_s = max(0.001, threshold_ms / 1000.0)
+    if silence_thresh is not None:
+        return _ffmpeg_silencedetect(wav_path, float(silence_thresh), min_s)
+
+    mean_db, max_db = _ffmpeg_mean_volume_db(wav_path)
+    thresholds: List[float] = []
+    try:
+        if max_db is not None:
+            base_max = float(max_db)
+            offsets = [18.0, 16.0, 14.0, 12.0, 10.0]
+            raw = [base_max - off for off in offsets]
+        elif mean_db is not None:
+            base = float(mean_db) - 8.0
+            offsets = [0.0, 6.0, 12.0]
+            raw = [base + off for off in offsets]
+        else:
+            raw = [-35.0, -30.0, -25.0, -20.0]
+        lower_limit = -60.0
+        upper_limit = -8.0
+        seen = set()
+        for t in raw:
+            try:
+                tv = max(lower_limit, min(upper_limit, float(t)))
+            except Exception:
+                continue
+            if tv not in seen:
+                seen.add(tv)
+                thresholds.append(tv)
+    except Exception:
+        thresholds = [-35.0, -30.0, -25.0, -20.0]
+
+    seen = set()
+    normalized: List[float] = []
+    for t in thresholds:
+        try:
+            tv = max(-60.0, min(-10.0, float(t)))
+        except Exception:
+            continue
+        if tv not in seen:
+            seen.add(tv)
+            normalized.append(tv)
+
+    # 如果需要查看移除静音的日志，请取消注释下面这一行
+    # logger.info("构建尝试阈值序列: %s", normalized)
+    for threshold_db in normalized:
+        # 如果需要查看移除静音的日志，请取消注释下面这一行
+        # logger.info("尝试 silencedetect with silence_thresh=%sdB (min_s=%ss)", threshold_db, min_s)
+        intervals = _ffmpeg_silencedetect(wav_path, threshold_db, min_s)
+        # 如果需要查看移除静音的日志，请取消注释下面这一行
+        # logger.info("silencedetect returned %d intervals for thresh=%s", len(intervals), threshold_db)
+        if intervals:
+            return intervals
+
+    # 如果需要查看移除静音的日志，请取消注释下面这一行
+    # logger.info("未检测到静音，视为全段非静音: %s", wav_path)
+    return []
+
+
+def _invert_and_expand(
+    silences: List[Tuple[float, float]],
+    duration_s: float,
+    keep_ms_local: int,
+) -> List[Tuple[float, float]]:
+    non_silent: List[Tuple[float, float]] = []
+    prev = 0.0
+    for s, e in sorted(silences, key=lambda x: x[0]):
+        if s > prev:
+            non_silent.append((prev, s))
+        prev = max(prev, e)
+    if prev < duration_s:
+        non_silent.append((prev, duration_s))
+    k = keep_ms_local / 1000.0
+    expanded: List[Tuple[float, float]] = []
+    for s, e in non_silent:
+        s_exp = max(0.0, s - k)
+        e_exp = min(duration_s, e + k)
+        if not expanded or s_exp > expanded[-1][1]:
+            expanded.append((s_exp, e_exp))
+        else:
+            expanded[-1] = (expanded[-1][0], max(expanded[-1][1], e_exp))
+    filtered = [(s, e) for s, e in expanded if (e - s) >= 0.02]
+    return filtered
+
+
+def _group_intervals_by_max_span(
+    intervals: List[Tuple[float, float]],
+    max_segment_len_s: int,
+) -> List[List[Tuple[float, float]]]:
+    """按时间轴跨度分组，单个超长区间会被硬切。"""
+    groups: List[List[Tuple[float, float]]] = []
+    max_seg_s = float(max_segment_len_s)
+    eps = 1e-6
+
+    cur_group: List[Tuple[float, float]] = []
+    segment_start: Optional[float] = None
+
+    def _flush_group():
+        nonlocal cur_group, segment_start
+        if cur_group:
+            groups.append(cur_group)
+            cur_group = []
+            segment_start = None
+
+    for s, e in intervals:
+        if e <= s:
+            continue
+
+        interval_len = e - s
+        if interval_len > max_seg_s + eps:
+            _flush_group()
+            start = s
+            while start < e - eps:
+                piece_end = min(e, start + max_seg_s)
+                groups.append([(start, piece_end)])
+                start = piece_end
+            continue
+
+        if not cur_group:
+            cur_group.append((s, e))
+            segment_start = s
+            continue
+
+        new_span = e - (segment_start if segment_start is not None else s)
+        if new_span <= max_seg_s + eps:
+            cur_group.append((s, e))
+        else:
+            _flush_group()
+            cur_group.append((s, e))
+            segment_start = s
+
+    _flush_group()
+    return groups
+
+
+def _build_filter_complex(intervals: List[Tuple[float, float]]) -> Optional[str]:
+    if not intervals:
+        return None
+    parts = []
+    labels = []
+    for idx, (s, e) in enumerate(intervals):
+        s_str = "{:.3f}".format(s)
+        e_str = "{:.3f}".format(e)
+        parts.append(f"[0:a]atrim=start={s_str}:end={e_str},asetpts=PTS-STARTPTS[a{idx}];")
+        labels.append(f"[a{idx}]")
+    concat_part = "".join(parts) + "".join(labels) + f"concat=n={len(intervals)}:v=0:a=1[out]"
+    return concat_part
+
+
+def trim_long_silences_from_wav(
     wav_path: str,
     out_wav_path: Optional[str] = None,
     threshold_ms: int = 700,
     keep_ms: int = 100,
     silence_thresh: Optional[int] = None,
-    seek_step: int = 1,
-    sample_rate: Optional[int] = None,
-    max_segment_len_s: int = 180,
-    opus_bitrate: str = "32k",
-    split: bool = False,
-    out_dir: Optional[str] = None,
-    keep_temp_wavs: bool = True,
-    only_split: bool = False,  # 新增：True 时 split 模式下只切片不移除组内静音
-) -> Union[str, List[dict]]:
-    """
-    移除静音并可选切片。split=False 返回处理后 wav 路径；split=True 返回 segments 列表。
-    only_split=True（当 split=True 时）会在分组后导出每个组的连续区间（保留组内静音），
-    但仍会基于 silencedetect 做静音检测用于分组。
-    """
-    def _ffmpeg_mean_volume_db(path: str) -> Tuple[Optional[float], Optional[float]]:
-        try:
-            cmd = ["ffmpeg", "-i", path, "-af", "volumedetect", "-f", "null", "-"]
-            p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stderr = p.stderr or ""
-            mean = None
-            maxv = None
-            m_mean = re.search(r"mean_volume:\s*([-\d.]+)\s*dB", stderr)
-            if m_mean:
-                try:
-                    mean = float(m_mean.group(1))
-                except Exception:
-                    mean = None
-            m_max = re.search(r"max_volume:\s*([-\d.]+)\s*dB", stderr)
-            if m_max:
-                try:
-                    maxv = float(m_max.group(1))
-                except Exception:
-                    maxv = None
-            return mean, maxv
-        except Exception:
-            return None, None
-
-    def _ffmpeg_silencedetect(path: str, noise_db: float, min_s: float) -> List[Tuple[float, float]]:
-        intervals: List[Tuple[float, float]] = []
-        try:
-            af = f"silencedetect=noise={noise_db}dB:d={min_s}"
-            cmd = ["ffmpeg", "-i", path, "-af", af, "-f", "null", "-"]
-            p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stderr = p.stderr or ""
-            starts = []
-            ends = []
-            for line in stderr.splitlines():
-                line = line.strip()
-                if "silence_start:" in line:
-                    m = re.search(r"silence_start:\s*([0-9.]+)", line)
-                    if m:
-                        starts.append(float(m.group(1)))
-                if "silence_end:" in line:
-                    m = re.search(r"silence_end:\s*([0-9.]+)", line)
-                    if m:
-                        ends.append(float(m.group(1)))
-            si = 0
-            ei = 0
-            while si < len(starts) and ei < len(ends):
-                if ends[ei] >= starts[si]:
-                    intervals.append((starts[si], ends[ei]))
-                    si += 1
-                    ei += 1
-                else:
-                    ei += 1
-            return intervals
-        except Exception:
-            return []
-
-    def _invert_and_expand(silences: List[Tuple[float, float]], duration_s: float, keep_ms_local: int) -> List[Tuple[float, float]]:
-        non_silent: List[Tuple[float, float]] = []
-        prev = 0.0
-        for s, e in sorted(silences, key=lambda x: x[0]):
-            if s > prev:
-                non_silent.append((prev, s))
-            prev = max(prev, e)
-        if prev < duration_s:
-            non_silent.append((prev, duration_s))
-        k = keep_ms_local / 1000.0
-        expanded: List[Tuple[float, float]] = []
-        for s, e in non_silent:
-            s_exp = max(0.0, s - k)
-            e_exp = min(duration_s, e + k)
-            if not expanded or s_exp > expanded[-1][1]:
-                expanded.append((s_exp, e_exp))
-            else:
-                expanded[-1] = (expanded[-1][0], max(expanded[-1][1], e_exp))
-        filtered = [(s, e) for s, e in expanded if (e - s) >= 0.02]
-        return filtered
-
-    def _build_filter_complex(intervals: List[Tuple[float, float]]) -> Optional[str]:
-        if not intervals:
-            return None
-        parts = []
-        labels = []
-        for idx, (s, e) in enumerate(intervals):
-            s_str = "{:.3f}".format(s)
-            e_str = "{:.3f}".format(e)
-            parts.append(f"[0:a]atrim=start={s_str}:end={e_str},asetpts=PTS-STARTPTS[a{idx}];")
-            labels.append(f"[a{idx}]")
-        concat_part = "".join(parts) + "".join(labels) + f"concat=n={len(intervals)}:v=0:a=1[out]"
-        return concat_part
-
+) -> str:
+    """移除长静音并输出单个 WAV。失败时返回原始 wav_path。"""
     try:
-        duration = get_audio_duration_seconds(wav_path)
+        duration = get_audio_duration_seconds(wav_path, probe_order="wave_first")
         if duration is None:
             logger.warning("无法获取音频时长，返回原始文件: %s", wav_path)
             return wav_path
 
-        silence_db: Optional[float] = None
-        silence_intervals: List[Tuple[float, float]] = []
-
-        if silence_thresh is not None:
-            silence_db = float(silence_thresh)
-            min_s = max(0.001, threshold_ms / 1000.0)
-            silence_intervals = _ffmpeg_silencedetect(wav_path, silence_db, min_s)
-        else:
-            mean_db, max_db = _ffmpeg_mean_volume_db(wav_path)
-            thresholds: List[float] = []
-            try:
-                if max_db is not None:
-                    base_max = float(max_db)
-                    offsets = [18.0, 16.0, 14.0, 12.0, 10.0]
-                    raw = [base_max - off for off in offsets]
-                elif mean_db is not None:
-                    base = float(mean_db) - 8.0
-                    offsets = [0.0, 6.0, 12.0]
-                    raw = [base + off for off in offsets]
-                else:
-                    raw = [-35.0, -30.0, -25.0, -20.0]
-                lower_limit = -60.0
-                upper_limit = -8.0
-                seen = set()
-                for t in raw:
-                    try:
-                        tv = max(lower_limit, min(upper_limit, float(t)))
-                    except Exception:
-                        continue
-                    if tv not in seen:
-                        seen.add(tv)
-                        thresholds.append(tv)
-            except Exception:
-                thresholds = [-35.0, -30.0, -25.0, -20.0]
-
-            seen = set()
-            normalized: List[float] = []
-            for t in thresholds:
-                try:
-                    tv = max(-60.0, min(-10.0, float(t)))
-                except Exception:
-                    continue
-                if tv not in seen:
-                    seen.add(tv)
-                    normalized.append(tv)
-            thresholds = normalized
-            # 如果需要查看移除静音的日志，请取消注释下面这一行
-            # logger.info("构建尝试阈值序列: %s", thresholds)
-
-            min_s = max(0.001, threshold_ms / 1000.0)
-            for tb in thresholds:
-                # 如果需要查看移除静音的日志，请取消注释下面这一行
-                # logger.info("尝试 silencedetect with silence_thresh=%sdB (min_s=%ss)", tb, min_s)
-                silence_intervals = _ffmpeg_silencedetect(wav_path, tb, min_s)
-                # 如果需要查看移除静音的日志，请取消注释下面这一行
-                # logger.info("silencedetect returned %d intervals for thresh=%s", len(silence_intervals), tb)
-                if silence_intervals:
-                    silence_db = tb
-                    break
-
-            if not silence_intervals:
-                # 如果需要查看移除静音的日志，请取消注释下面这一行
-                # logger.info("未检测到静音，视为全段非静音: %s", wav_path)
-                silence_db = None
-
+        silence_intervals = _detect_silence_intervals(wav_path, threshold_ms, silence_thresh)
         non_silent_intervals = _invert_and_expand(silence_intervals, duration, keep_ms)
 
         if not non_silent_intervals:
@@ -368,80 +398,56 @@ def remove_long_silences_from_wav(
             # logger.info("反转后未得到非静音区间，返回原始文件: %s", wav_path)
             return wav_path
 
-        if not split:
-            filter_complex = _build_filter_complex(non_silent_intervals)
-            if not filter_complex:
-                logger.info("构建 filter_complex 失败，返回原始文件: %s", wav_path)
-                return wav_path
-            if not out_wav_path:
-                base = os.path.splitext(wav_path)[0]
-                out_wav_path = f"{base}_nosilence.wav"
-            ffmpeg_cmd = ["ffmpeg", "-i", wav_path, "-filter_complex", filter_complex, "-map", "[out]", "-ac", "1", out_wav_path, "-y"]
-            p = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if p.returncode != 0:
-                logger.error("ffmpeg 提取合并失败，返回原始文件: %s", wav_path)
-                return wav_path
+        filter_complex = _build_filter_complex(non_silent_intervals)
+        if not filter_complex:
+            logger.info("构建 filter_complex 失败，返回原始文件: %s", wav_path)
+            return wav_path
+        if not out_wav_path:
+            base = os.path.splitext(wav_path)[0]
+            out_wav_path = f"{base}_nosilence.wav"
+        ffmpeg_cmd = ["ffmpeg", "-i", wav_path, "-filter_complex", filter_complex, "-map", "[out]", "-ac", "1", out_wav_path, "-y"]
+        p = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if p.returncode != 0:
+            logger.error("ffmpeg 提取合并失败，返回原始文件: %s", wav_path)
+            return wav_path
+        # 如果需要查看移除静音的日志，请取消注释下面这一行
+        # logger.info("已移除静音: %s -> %s", wav_path, out_wav_path)
+        return out_wav_path
+    except Exception:
+        logger.exception("静音裁剪异常")
+        return wav_path
+
+
+def split_wav_by_silence_groups(
+    wav_path: str,
+    threshold_ms: int = 700,
+    keep_ms: int = 100,
+    silence_thresh: Optional[int] = None,
+    sample_rate: Optional[int] = None,
+    max_segment_len_s: int = 180,
+    opus_bitrate: str = "32k",
+    out_dir: Optional[str] = None,
+    keep_temp_wavs: bool = True,
+    preserve_internal_silence: bool = True,
+) -> List[dict]:
+    """基于长静音分组切片，并为每段生成 OGG/Opus 和元数据。"""
+    try:
+        duration = get_audio_duration_seconds(wav_path, probe_order="wave_first")
+        if duration is None:
+            logger.warning("无法获取音频时长，无法切片: %s", wav_path)
+            return []
+
+        silence_intervals = _detect_silence_intervals(wav_path, threshold_ms, silence_thresh)
+        non_silent_intervals = _invert_and_expand(silence_intervals, duration, keep_ms)
+
+        if not non_silent_intervals:
             # 如果需要查看移除静音的日志，请取消注释下面这一行
-            # logger.info("已移除静音: %s -> %s", wav_path, out_wav_path)
-            return out_wav_path
+            # logger.info("反转后未得到非静音区间，无法切片: %s", wav_path)
+            return []
 
-        # split=True: 基于时间轴跨度严格控制每段长度（不依赖累计非静音时长）
-        segs: List[List[Tuple[float, float]]] = []
-        max_seg_s = float(max_segment_len_s)
-        eps = 1e-6
-
-        cur_group: List[Tuple[float, float]] = []
-        segment_start: Optional[float] = None  # 当前组的起点（时间轴）
-
-        def _flush_group():
-            nonlocal cur_group, segment_start
-            if cur_group:
-                segs.append(cur_group)
-                cur_group = []
-                segment_start = None
-
-        for s, e in non_silent_intervals:
-            if e <= s:
-                continue
-
-            interval_len = e - s
-
-            # 情况 A：单个 interval 自身就超过 max_seg_s，需要在内部硬切
-            if interval_len > max_seg_s + eps:
-                # 先把当前组刷掉，因为这个长 interval 应该自己占满多个组
-                _flush_group()
-
-                start = s
-                while start < e - eps:
-                    piece_end = min(e, start + max_seg_s)
-                    # 这一个子段单独成组
-                    segs.append([(start, piece_end)])
-                    start = piece_end
-                # 长 interval 已完全被切完，不再参与后续当前组累加
-                continue
-
-            # 情况 B：interval_len 本身不超过 max_seg_s，尝试加入当前组
-            if not cur_group:
-                # 当前没有打开的组，这个 interval 作为新组的第一个
-                cur_group.append((s, e))
-                segment_start = s
-            else:
-                # 计算如果把这个 interval 加进去，整组跨度会是多少
-                new_span = e - (segment_start if segment_start is not None else s)
-                if new_span <= max_seg_s + eps:
-                    # 不会超过上限，直接加
-                    cur_group.append((s, e))
-                else:
-                    # 加进去会超出上限：
-                    # 按你的要求：不拆这个 interval，而是让它作为下一组的第一个分段
-                    _flush_group()
-                    cur_group.append((s, e))
-                    segment_start = s
-
-        _flush_group()
-
-        if not segs:
-            logger.info("没有生成任何分段，返回原始文件: %s", wav_path)
+        groups = _group_intervals_by_max_span(non_silent_intervals, max_segment_len_s)
+        if not groups:
+            logger.info("没有生成任何分段，返回空列表: %s", wav_path)
             return []
 
         if not out_dir:
@@ -453,8 +459,8 @@ def remove_long_silences_from_wav(
         sample_rate_use = int(sample_rate) if sample_rate else 16000
         seg_index = 1
 
-        for group in segs:
-            if only_split:
+        for group in groups:
+            if preserve_internal_silence:
                 s0 = group[0][0]
                 e0 = group[-1][1]
                 s_str = "{:.3f}".format(s0)
@@ -504,11 +510,11 @@ def remove_long_silences_from_wav(
             )
             seg_index += 1
         # 如果需要查看移除静音的日志，请取消注释下面这一行
-        # logger.info("已生成 %d 个分段到 %s (only_split=%s)", len(segments), out_dir, only_split)
+        # logger.info("已生成 %d 个分段到 %s (preserve_internal_silence=%s)", len(segments), out_dir, preserve_internal_silence)
         return segments
     except Exception:
-        logger.exception("静音移除/切片异常")
-        return wav_path
+        logger.exception("静音切片异常")
+        return []
 
 
 def encode_wav_to_opus(wav_input_path: str, ogg_output_path: str, sample_rate: int, opus_bitrate: str = "32k") -> None:
@@ -582,44 +588,6 @@ async def retry_blocking_call(
     return {"status": "error", "message": f"调用失败: {str(last_exc)}"}
 
 
-def call_recognition_sdk_blocking(audio_path: str, model: str, sample_rate: int, language: Optional[str] = None) -> dict:
-    """调用本地 Recognition SDK（期望传入 opus）。"""
-    try:
-        recognition_kwargs: Dict[str, Any] = {
-            "model": model,
-            "format": "opus",
-            "sample_rate": sample_rate,
-            "disfluency_removal_enabled": True,
-            "semantic_punctuation_enabled": True,
-            "callback": None,
-        }
-        if language:
-            recognition_kwargs["language_hints"] = [language]
-
-        recognition = Recognition(**recognition_kwargs)
-        # 如果需要查看移除静音的日志，请取消注释下面这一行
-        # logger.info("调用 Recognition SDK: model=%s", model)
-        result = recognition.call(audio_path)
-        if getattr(result, "status_code", None) == HTTPStatus.OK:
-            sentences = result.get_sentence()
-            if isinstance(sentences, list):
-                combined_text = "".join(sen.get("text", "") for sen in sentences)
-            elif isinstance(sentences, dict):
-                combined_text = sentences.get("text", "")
-            else:
-                combined_text = str(sentences or "")
-            # 如果提取到字段存在但为空（包括只含空白），覆盖为占位字符串以便上层区分出错段
-            if isinstance(combined_text, str) and combined_text.strip() == "":
-                combined_text = "【该段音频转录出错】"
-            return {"status": "success", "text": combined_text}
-        error_msg = getattr(result, "message", None) or str(result)
-        logger.error("Recognition SDK 返回错误: %s", error_msg)
-        return {"status": "error", "message": f"语音识别失败: {error_msg}"}
-    except Exception:
-        logger.exception("Recognition 调用异常")
-        return {"status": "error", "message": "调用识别服务时发生异常"}
-
-
 def call_qwen3_asr_blocking(segment_path: str, model: str = "qwen3-asr-flash", asr_options: Optional[dict] = None, prompt: str = "") -> dict:
     """调用 dashscope MultiModalConversation.call（qwen3-asr）。"""
     try:
@@ -634,7 +602,7 @@ def call_qwen3_asr_blocking(segment_path: str, model: str = "qwen3-asr-flash", a
             {"role": "system", "content": [{"text": system_text}]},
             {"role": "user", "content": [{"audio": from_path}]},
         ]
-        asr_options_local: Dict[str, Any] = asr_options if asr_options is not None else {"enable_lid": True, "enable_itn": True}
+        asr_options_local: Dict[str, Any] = asr_options if asr_options is not None else {"enable_lid": True, "enable_itn": False}
         call_kwargs: Dict[str, Any] = {
             "api_key": dashscope.api_key,
             "model": model,
@@ -718,112 +686,157 @@ async def recognize_segments_concurrently(
     return sorted(results, key=lambda x: x["index"])
 
 
-def get_audio_duration_seconds(path: str) -> Optional[float]:
-    """获取音频时长（秒），优先 mediainfo，再 ffprobe/ffmpeg/wave 回退。"""
+def _probe_duration_with_mediainfo(path: str) -> Optional[float]:
     try:
-        try:
-            p = subprocess.run(
-                ["mediainfo", "--Output=JSON", path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=8,
+        p = subprocess.run(
+            ["mediainfo", "--Output=JSON", path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=8,
+        )
+        if p.returncode == 0 and p.stdout:
+            try:
+                obj = json.loads(p.stdout)
+                media = obj.get("media", {}) if isinstance(obj, dict) else {}
+                tracks = media.get("track", []) if isinstance(media, dict) else []
+                for t in tracks:
+                    if not isinstance(t, dict):
+                        continue
+                    # Duration / duration 都直接当秒用，不做 /1000
+                    if "Duration" in t:
+                        try:
+                            dur_val = float(t.get("Duration"))
+                            if dur_val > 0:
+                                return dur_val
+                        except Exception:
+                            pass
+                    if "duration" in t:
+                        try:
+                            dur_val = float(t.get("duration"))
+                            if dur_val > 0:
+                                return dur_val
+                        except Exception:
+                            pass
+            except Exception:
+                logger.debug("mediainfo JSON 解析失败")
+    except FileNotFoundError:
+        logger.debug("mediainfo 未安装，回退 ffprobe")
+    except subprocess.TimeoutExpired:
+        logger.warning("mediainfo 超时")
+    except Exception:
+        logger.debug("mediainfo 调用异常")
+    return None
+
+
+def _probe_duration_with_ffprobe_simple(path: str) -> Optional[float]:
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", path,
+        ]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=8)
+        if p.returncode == 0:
+            out = (p.stdout or "").strip()
+            if out:
+                try:
+                    return float(out)
+                except Exception:
+                    logger.debug("ffprobe 简单解析失败")
+    except subprocess.TimeoutExpired:
+        logger.warning("ffprobe 简单输出超时")
+    except Exception:
+        logger.debug("ffprobe 简单输出异常")
+    return None
+
+
+def _probe_duration_with_ffprobe_json(path: str) -> Optional[float]:
+    try:
+        cmd = ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", path]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=8)
+        if p.returncode == 0 and p.stdout:
+            try:
+                obj = json.loads(p.stdout)
+                fmt = obj.get("format", {}) if isinstance(obj, dict) else {}
+                dur = fmt.get("duration")
+                if dur:
+                    return float(dur)
+            except Exception:
+                logger.debug("ffprobe json 解析失败")
+    except subprocess.TimeoutExpired:
+        logger.warning("ffprobe json 超时")
+    except Exception:
+        logger.debug("ffprobe json 异常")
+    return None
+
+
+def _probe_duration_with_ffmpeg(path: str) -> Optional[float]:
+    try:
+        cmd = ["ffmpeg", "-i", path, "-f", "null", "-"]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=8)
+        stderr = p.stderr or ""
+        m = re.search(r"Duration:\s*([0-9]{2}:[0-9]{2}:[0-9]{2}\.?[0-9]*)", stderr)
+        if m:
+            hhmmss = m.group(1)
+            try:
+                parts = hhmmss.split(":")
+                return float(parts[0]) * 3600.0 + float(parts[1]) * 60.0 + float(parts[2])
+            except Exception:
+                logger.debug("ffmpeg Duration 解析失败")
+    except subprocess.TimeoutExpired:
+        logger.warning("ffmpeg duration 超时")
+    except Exception:
+        logger.debug("ffmpeg duration 解析异常")
+    return None
+
+
+def _probe_duration_with_wave(path: str) -> Optional[float]:
+    try:
+        if str(path).lower().endswith(".wav"):
+            with contextlib.closing(wave.open(path, "rb")) as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                if rate and frames is not None:
+                    return float(frames) / float(rate)
+    except Exception:
+        logger.debug("wave 读取失败")
+    return None
+
+
+def get_audio_duration_seconds(path: str, probe_order: str = "media_first") -> Optional[float]:
+    """获取音频时长（秒），支持 media_first 或 wave_first 两种探测顺序。"""
+    try:
+        if probe_order == "media_first":
+            probes = (
+                _probe_duration_with_mediainfo,
+                _probe_duration_with_ffprobe_simple,
+                _probe_duration_with_ffprobe_json,
+                _probe_duration_with_ffmpeg,
+                _probe_duration_with_wave,
             )
-            if p.returncode == 0 and p.stdout:
-                try:
-                    obj = json.loads(p.stdout)
-                    media = obj.get("media", {}) if isinstance(obj, dict) else {}
-                    tracks = media.get("track", []) if isinstance(media, dict) else []
-                    for t in tracks:
-                        if not isinstance(t, dict):
-                            continue
-                        # Duration / duration 都直接当秒用，不做 /1000
-                        if "Duration" in t:
-                            try:
-                                dur_val = float(t.get("Duration"))
-                                if dur_val > 0:
-                                    return dur_val
-                            except Exception:
-                                pass
-                        if "duration" in t:
-                            try:
-                                dur_val = float(t.get("duration"))
-                                if dur_val > 0:
-                                    return dur_val
-                            except Exception:
-                                pass
-                except Exception:
-                    logger.debug("mediainfo JSON 解析失败")
-        except FileNotFoundError:
-            logger.debug("mediainfo 未安装，回退 ffprobe")
-        except subprocess.TimeoutExpired:
-            logger.warning("mediainfo 超时")
-        except Exception:
-            logger.debug("mediainfo 调用异常")
+        elif probe_order == "wave_first":
+            probes = (
+                _probe_duration_with_wave,
+                _probe_duration_with_mediainfo,
+                _probe_duration_with_ffprobe_simple,
+                _probe_duration_with_ffprobe_json,
+                _probe_duration_with_ffmpeg,
+            )
+        else:
+            logger.warning("未知的音频时长探测顺序: %s，回退 media_first", probe_order)
+            probes = (
+                _probe_duration_with_mediainfo,
+                _probe_duration_with_ffprobe_simple,
+                _probe_duration_with_ffprobe_json,
+                _probe_duration_with_ffmpeg,
+                _probe_duration_with_wave,
+            )
 
-        try:
-            cmd1 = [
-                "ffprobe", "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1", path,
-            ]
-            p = subprocess.run(cmd1, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=8)
-            if p.returncode == 0:
-                out = (p.stdout or "").strip()
-                if out:
-                    try:
-                        return float(out)
-                    except Exception:
-                        logger.debug("ffprobe 简单解析失败")
-        except subprocess.TimeoutExpired:
-            logger.warning("ffprobe 简单输出超时")
-        except Exception:
-            logger.debug("ffprobe 简单输出异常")
-
-        try:
-            cmd2 = ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", path]
-            p = subprocess.run(cmd2, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=8)
-            if p.returncode == 0 and p.stdout:
-                try:
-                    obj = json.loads(p.stdout)
-                    fmt = obj.get("format", {}) if isinstance(obj, dict) else {}
-                    dur = fmt.get("duration")
-                    if dur:
-                        return float(dur)
-                except Exception:
-                    logger.debug("ffprobe json 解析失败")
-        except subprocess.TimeoutExpired:
-            logger.warning("ffprobe json 超时")
-        except Exception:
-            logger.debug("ffprobe json 异常")
-
-        try:
-            cmd3 = ["ffmpeg", "-i", path, "-f", "null", "-"]
-            p = subprocess.run(cmd3, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=8)
-            stderr = p.stderr or ""
-            m = re.search(r"Duration:\s*([0-9]{2}:[0-9]{2}:[0-9]{2}\.?[0-9]*)", stderr)
-            if m:
-                hhmmss = m.group(1)
-                try:
-                    parts = hhmmss.split(":")
-                    secs = float(parts[0]) * 3600.0 + float(parts[1]) * 60.0 + float(parts[2])
-                    return secs
-                except Exception:
-                    logger.debug("ffmpeg Duration 解析失败")
-        except subprocess.TimeoutExpired:
-            logger.warning("ffmpeg duration 超时")
-        except Exception:
-            logger.debug("ffmpeg duration 解析异常")
-
-        try:
-            if str(path).lower().endswith(".wav"):
-                with contextlib.closing(wave.open(path, "rb")) as wf:
-                    frames = wf.getnframes()
-                    rate = wf.getframerate()
-                    if rate and frames is not None:
-                        return float(frames) / float(rate)
-        except Exception:
-            logger.debug("wave 读取失败")
+        for probe in probes:
+            duration = probe(path)
+            if duration is not None:
+                return duration
 
         return None
     except Exception:
@@ -831,9 +844,9 @@ def get_audio_duration_seconds(path: str) -> Optional[float]:
         return None
 
 
-def get_audio_duration_ms(file_path: str) -> int:
+def get_audio_duration_ms(file_path: str, probe_order: str = "media_first") -> int:
     """返回时长（毫秒）。"""
-    secs = get_audio_duration_seconds(file_path)
+    secs = get_audio_duration_seconds(file_path, probe_order=probe_order)
     if secs is None:
         raise ValueError(f"无法获取文件时长: {file_path}")
     return int(round(secs * 1000))
@@ -845,7 +858,7 @@ def _split_wav_fixed_intervals(wav_path: str, out_dir: str, slice_s: int = 3, sa
     使用 ffmpeg 的 segment muxer 在单次进程调用中输出所有切片。
     """
     os.makedirs(out_dir, exist_ok=True)
-    dur = get_audio_duration_seconds(wav_path)
+    dur = get_audio_duration_seconds(wav_path, probe_order="wave_first")
     if dur is None or dur <= 0.0:
         raise ValueError("无法获取音频时长或时长为0: " + wav_path)
 
@@ -924,7 +937,7 @@ async def remove_silence_by_fixed_slices_and_merge(
     max_workers: Optional[int] = None,
 ) -> str:
     """
-    切成固定 slice_s 秒的小片，对每片运行 remove_long_silences_from_wav(split=False) 做局部静音裁剪，
+    切成固定 slice_s 秒的小片，对每片运行 trim_long_silences_from_wav 做局部静音裁剪，
     支持并发处理分片，跳过空片并按序合并，返回合并后 wav 路径。
 
     max_workers: 并发线程数，优先使用传入值；若为 None 则读取环境变量 FFMPEG_WORKS（正整数），
@@ -1012,15 +1025,12 @@ async def remove_silence_by_fixed_slices_and_merge(
     def _process_slice(sp: str, out_trim: str, idx: int):
         """在线程池中运行的阻塞函数，返回结构化结果。"""
         try:
-            trimmed = remove_long_silences_from_wav(
+            trimmed = trim_long_silences_from_wav(
                 sp,
                 out_wav_path=out_trim,
                 threshold_ms=threshold_ms,
                 keep_ms=keep_ms,
                 silence_thresh=None,
-                seek_step=1,
-                sample_rate=sample_rate,
-                split=False,
             )
             if isinstance(trimmed, str) and os.path.exists(trimmed):
                 return {"index": idx, "trimmed": trimmed, "ok": True}
@@ -1047,15 +1057,12 @@ async def remove_silence_by_fixed_slices_and_merge(
         for sp in slice_paths:
             try:
                 out_trim = os.path.join(trimmed_dir, f"{base}_slice_trim{sidx:04d}.wav")
-                trimmed = remove_long_silences_from_wav(
+                trimmed = trim_long_silences_from_wav(
                     sp,
                     out_wav_path=out_trim,
                     threshold_ms=threshold_ms,
                     keep_ms=keep_ms,
                     silence_thresh=None,
-                    seek_step=1,
-                    sample_rate=sample_rate,
-                    split=False,
                 )
                 if isinstance(trimmed, str) and os.path.exists(trimmed):
                     results.append({"index": sidx, "trimmed": trimmed, "ok": True})
@@ -1071,7 +1078,7 @@ async def remove_silence_by_fixed_slices_and_merge(
     for r in sorted(results, key=lambda x: x.get("index", 0)):
         if r.get("ok") and r.get("trimmed") and os.path.exists(r.get("trimmed")):
             try:
-                dur = get_audio_duration_seconds(r.get("trimmed")) or 0.0
+                dur = get_audio_duration_seconds(r.get("trimmed"), probe_order="wave_first") or 0.0
             except Exception:
                 dur = 0.0
             if dur >= 0.01:
@@ -1109,12 +1116,28 @@ async def remove_silence_by_fixed_slices_and_merge(
     return out_merged_wav
 
 
-async def process_audio_file(file: UploadFile, model: str, endpoint_path: str, language: str = "", prompt: str = ""):
+async def process_audio_file(
+    file: UploadFile,
+    model: str,
+    endpoint_path: str,
+    language: str = "",
+    prompt: str = "",
+    enable_lid: bool = True,
+    enable_itn: bool = False,
+):
     """主处理流程：保存、转码、先固定切片局部裁剪合并，再按模型走 QWEN 并发或整体识别路径。"""
     request_id = str(uuid.uuid4())
     request_id_var.set(request_id)
     lang_code = normalize_language_code(language)
-    logger.info("收到请求 %s, 文件: %s, 模型: %s, language: %s", endpoint_path, file.filename, model, lang_code)
+    logger.info(
+        "收到请求 %s, 文件: %s, 模型: %s, language: %s, enable_lid: %s, enable_itn: %s",
+        endpoint_path,
+        file.filename,
+        model,
+        lang_code,
+        enable_lid,
+        enable_itn,
+    )
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="未选择文件")
@@ -1150,14 +1173,9 @@ async def process_audio_file(file: UploadFile, model: str, endpoint_path: str, l
             "max_delay": 8.0,
         }
 
-        segments: List[dict] = []
-        trimmed_wav: Optional[str] = None
-
         try:
             wav_path = os.path.join(temp_dir, "converted.wav")
             preconvert_to_wav(file_path, wav_path, sample_rate)
-
-            split_flag = resolved_model in QWEN_ASR_MODELS
 
             try:
                 merged_wav = await remove_silence_by_fixed_slices_and_merge(
@@ -1170,100 +1188,54 @@ async def process_audio_file(file: UploadFile, model: str, endpoint_path: str, l
                 logger.exception("固定切片并合并失败，回退使用原始 wav")
                 merged_wav = wav_path
 
-            if split_flag:
-                out_dir = os.path.join(temp_dir, "out_segments")
-                os.makedirs(out_dir, exist_ok=True)
-                # 解析音频分片合并填充区间优先级：环境变量 PADDING_LENGTH > 默认 100 毫秒
-                # 解析音频静音区间长度优先级：环境变量 SILENT_INTERVAL > 默认 700 毫秒
-                keep_ms = int(os.getenv("PADDING_LENGTH", "100"))
-                threshold_ms = int(os.getenv("SILENT_INTERVAL", "700"))
-                # 这里只切片不移除组内静音（only_split=True）
-                processed = remove_long_silences_from_wav(
-                    merged_wav,
-                    out_wav_path=None,
-                    threshold_ms=threshold_ms,
-                    keep_ms=keep_ms,
-                    silence_thresh=None,
-                    seek_step=1,
-                    sample_rate=sample_rate,
-                    max_segment_len_s=175,
-                    opus_bitrate="32k",
-                    split=True,
-                    out_dir=out_dir,
-                    keep_temp_wavs=True,
-                    only_split=True,
-                )
-                if not isinstance(processed, list):
-                    logger.error("split 模式下未返回分段列表")
-                    raise HTTPException(status_code=500, detail="未能生成分段")
-                segments = processed
-                total_after_ms = sum(int(seg.get("duration_ms", 0)) for seg in segments)
-                logger.info("切片并生成 %d 个分段, 总时长: %d ms", len(segments), total_after_ms)
-            else:
-                trimmed_wav = merged_wav
-                try:
-                    new_ms = get_audio_duration_ms(trimmed_wav)
-                    logger.info("移除静音后时长: %d ms", new_ms)
-                except Exception:
-                    logger.info("无法获取移除静音后时长")
+            out_dir = os.path.join(temp_dir, "out_segments")
+            os.makedirs(out_dir, exist_ok=True)
+            # 解析音频分片合并填充区间优先级：环境变量 PADDING_LENGTH > 默认 100 毫秒
+            # 解析音频静音区间长度优先级：环境变量 SILENT_INTERVAL > 默认 700 毫秒
+            keep_ms = int(os.getenv("PADDING_LENGTH", "100"))
+            threshold_ms = int(os.getenv("SILENT_INTERVAL", "700"))
+            # 这里只切片不移除组内静音。
+            segments = split_wav_by_silence_groups(
+                merged_wav,
+                threshold_ms=threshold_ms,
+                keep_ms=keep_ms,
+                silence_thresh=None,
+                sample_rate=sample_rate,
+                max_segment_len_s=175,
+                opus_bitrate="32k",
+                out_dir=out_dir,
+                keep_temp_wavs=True,
+                preserve_internal_silence=True,
+            )
+            if not segments:
+                logger.error("未生成分段列表")
+                raise HTTPException(status_code=500, detail="未能生成分段")
+            total_after_ms = sum(int(seg.get("duration_ms", 0)) for seg in segments)
+            logger.info("切片并生成 %d 个分段, 总时长: %d ms", len(segments), total_after_ms)
 
-                if os.path.exists(wav_path):
-                    try:
-                        os.remove(wav_path)
-                    except Exception:
-                        pass
+            asr_opts_for_segments: dict = {"enable_lid": enable_lid, "enable_itn": enable_itn}
+            if lang_code:
+                asr_opts_for_segments["language"] = lang_code
 
-            if split_flag:
-                asr_opts_for_segments: dict = {"enable_lid": True, "enable_itn": True}
-                if lang_code:
-                    asr_opts_for_segments["language"] = lang_code
+            recognize_results = await recognize_segments_concurrently(
+                segments,
+                resolved_model,
+                max_concurrency=5,
+                retry_params=retry_params,
+                asr_options=asr_opts_for_segments,
+                prompt=prompt,
+            )
 
-                recognize_results = await recognize_segments_concurrently(
-                    segments,
-                    resolved_model,
-                    max_concurrency=5,
-                    retry_params=retry_params,
-                    asr_options=asr_opts_for_segments,
-                    prompt=prompt,
-                )
+            concatenated_text = ""
+            for r in recognize_results:
+                if r.get("status") != "success":
+                    logger.error("分片识别失败: index=%s, msg=%s", r.get("index"), r.get("message"))
+                    raise HTTPException(status_code=500, detail=f"分片识别失败: index={r.get('index')}, msg={r.get('message')}")
+                concatenated_text += r.get("text", "")
 
-                concatenated_text = ""
-                for r in recognize_results:
-                    if r.get("status") != "success":
-                        logger.error("分片识别失败: index=%s, msg=%s", r.get("index"), r.get("message"))
-                        raise HTTPException(status_code=500, detail=f"分片识别失败: index={r.get('index')}, msg={r.get('message')}")
-                    concatenated_text += r.get("text", "")
-
-                result = {"status": "success", "text": concatenated_text}
-                logger.info("请求处理完毕")
-                return JSONResponse(content=result)
-            else:
-                try:
-                    if not trimmed_wav or not os.path.exists(trimmed_wav):
-                        logger.error("处理后音频文件缺失")
-                        raise HTTPException(status_code=500, detail="处理后音频文件缺失")
-                    output_ogg = os.path.join(temp_dir, "converted.ogg")
-                    encode_wav_to_opus(trimmed_wav, output_ogg, sample_rate, opus_bitrate="32k")
-                except HTTPException:
-                    raise
-                except Exception:
-                    logger.exception("整体转码失败")
-                    raise HTTPException(status_code=400, detail="转码失败")
-
-                result = await retry_blocking_call(
-                    call_recognition_sdk_blocking,
-                    output_ogg,
-                    resolved_model,
-                    sample_rate,
-                    lang_code,
-                    executor_for_run=executor,
-                    **retry_params,
-                )
-                if not isinstance(result, dict) or result.get("status") != "success":
-                    logger.error("Recognition 识别失败")
-                    raise HTTPException(status_code=500, detail=result.get("message", "语音识别失败"))
-                logger.info("请求处理完毕")
-                return JSONResponse(content=result)
+            result = {"status": "success", "text": concatenated_text}
+            logger.info("请求处理完毕")
+            return JSONResponse(content=result)
         except Exception:
             logger.exception("移除静音/切片/识别流程失败")
             raise HTTPException(status_code=400, detail="音频处理失败")
@@ -1285,9 +1257,19 @@ async def upload_audio(
     model: str = Form(...),
     language: str = Form(""),
     prompt: str = Form(""),
+    enable_lid: bool = Form(True),
+    enable_itn: bool = Form(False),
 ):
     """兼容上传接口。"""
-    return await process_audio_file(audio, model, "/upload_audio", language, prompt)
+    return await process_audio_file(
+        audio,
+        model,
+        "/upload_audio",
+        language,
+        prompt,
+        enable_lid,
+        enable_itn,
+    )
 
 
 @app.post("/v1/audio/transcriptions", dependencies=[Depends(verify_token)])
@@ -1296,6 +1278,8 @@ async def audio_transcriptions(
     model: str = Form(...),
     language: str = Form(""),
     prompt: str = Form(""),
+    enable_lid: bool = Form(True),
+    enable_itn: bool = Form(False),
 ):
     # 调试：打印并记录收到的表单字段（区分普通字段与文件）
     # form = await request.form()
@@ -1309,4 +1293,12 @@ async def audio_transcriptions(
     # print("DEBUG form:", items)
 
     """OpenAI 风格转写兼容接口。"""
-    return await process_audio_file(file, model, "/v1/audio/transcriptions", language, prompt)
+    return await process_audio_file(
+        file,
+        model,
+        "/v1/audio/transcriptions",
+        language,
+        prompt,
+        enable_lid,
+        enable_itn,
+    )

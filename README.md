@@ -14,10 +14,7 @@
 * ✅ 支持多种音频输入（服务端统一转 WAV + 单声道 + 目标采样率）
 * ✅ Bearer Token 鉴权（支持多个 token）
 * ✅ 自动清理临时文件目录，避免磁盘堆积
-* ✅ 支持两类识别路径：
-
-  * Paraformer 系列（整体识别 + 静音裁剪后转 Opus）
-  * Qwen3 ASR（静音增强后切片 + 并发识别 + 拼接输出）
+* ✅ 支持 Qwen3 ASR 识别路径（静音增强后切片 + 并发识别 + 拼接输出）
 
 ## Docker 部署
 
@@ -89,7 +86,9 @@ curl -X POST "http://localhost:8888/v1/audio/transcriptions" \
   -H "Authorization: Bearer sk-aaa" \
   -F "file=@demo.wav" \
   -F "model=asr" \
-  -F "language=zh"
+  -F "language=zh" \
+  -F "enable_lid=true" \
+  -F "enable_itn=false"
 ```
 
 ## 快速开始
@@ -151,6 +150,8 @@ uvicorn bailian-audio-api:app --host 0.0.0.0 --port 8080 --workers 4
 * `model`：模型名（必填）
 * `language`：可选，两字母语言码，如 `zh` / `en`（会被校验格式）
 * `prompt`：可选，主要用于 qwen3-asr 的 system prompt
+* `enable_lid`：可选，是否启用语言识别，默认 `true`
+* `enable_itn`：可选，是否启用逆文本归一化，默认 `false`
 
 **示例：**
 
@@ -160,7 +161,9 @@ curl -X POST "http://localhost:8080/v1/audio/transcriptions" \
   -F "file=@demo.wav" \
   -F "model=asr" \
   -F "language=zh" \
-  -F "prompt=请尽量保留口语表达"
+  -F "prompt=请尽量保留口语表达" \
+  -F "enable_lid=true" \
+  -F "enable_itn=false"
 ```
 
 **响应：**
@@ -171,20 +174,18 @@ curl -X POST "http://localhost:8080/v1/audio/transcriptions" \
 
 ### 2) 兼容上传接口：`POST /upload_audio`
 
-字段与返回基本一致：`audio` 作为文件字段名。
+字段与返回基本一致：`audio` 作为文件字段名；同样支持 `enable_lid` / `enable_itn` 表单字段。
 
 ## 支持的模型与采样率策略
 
-服务支持“别名 → 标准模型名”的映射，并为每个模型固定采样率（用于转 WAV、编码 Opus 等）。
+服务支持 Qwen3 ASR 模型，并为每个模型固定采样率（用于转 WAV、编码 Opus 等）。
 
 **常用别名：**
 
-* `v2` → `paraformer-realtime-v2`
 * `asr` → `qwen3-asr-flash`
 * `asr-0908` → `qwen3-asr-flash-2025-09-08`
-* `8k-v1` / `8k-v2` / `v1` 等
 
-Paraformer 默认采样率例：`paraformer-realtime-v2` 走 `48000`。Qwen3 ASR 走 `16000`。
+Qwen3 ASR 统一走 `16000` 采样率。
 
 # 核心设计与实现细节
 
@@ -234,7 +235,7 @@ Paraformer 默认采样率例：`paraformer-realtime-v2` 走 `48000`。Qwen3 ASR
 
 ### 静音裁剪的关键点
 
-`remove_long_silences_from_wav` 逻辑可以概括为：
+`trim_long_silences_from_wav` 逻辑可以概括为：
 
 1. 用 `ffmpeg -af volumedetect` 估计音量范围（mean/max）
 2. 构造一系列 `silencedetect=noise=XdB:d=Y` 阈值尝试序列，直到检测到静音区间
@@ -265,7 +266,7 @@ Paraformer 默认采样率例：`paraformer-realtime-v2` 走 `48000`。Qwen3 ASR
 
 ### “不影响完整性 / 大多数情况下不会硬切”的实现方式
 
-切片逻辑非常关键：`remove_long_silences_from_wav(split=True, only_split=True)`
+切片逻辑非常关键：`split_wav_by_silence_groups(preserve_internal_silence=True)`
 
 #### A. 切片依据：静音检测驱动的分组
 
@@ -273,9 +274,9 @@ Paraformer 默认采样率例：`paraformer-realtime-v2` 走 `48000`。Qwen3 ASR
 * 再反转得到非静音区间（连续说话的片段）
 * 然后把这些非静音区间按时间轴累积成“组”，每组最长 `max_segment_len_s`（代码里用 175 秒）
 
-#### B. only_split=True：只按组导出“连续区间”，保留组内静音
+#### B. preserve_internal_silence=True：只按组导出“连续区间”，保留组内静音
 
-* `only_split=True` 表示：**分组仍然参考 silencedetect，但导出音频时不做组内静音删除**
+* `preserve_internal_silence=True` 表示：**分组仍然参考 silencedetect，但导出音频时不做组内静音删除**
 * 导出方式是 `-ss start -to end`，直接导出整段连续区间
 
 这能带来两个核心收益：
@@ -299,7 +300,8 @@ Paraformer 默认采样率例：`paraformer-realtime-v2` 走 `48000`。Qwen3 ASR
 
 ### 1) 为什么需要 mediainfo？
 
-用于更稳健地获取音频时长；代码会优先 mediainfo，失败再回退 ffprobe/ffmpeg/wave。
+用于更稳健地获取外部输入音频的时长；原始上传文件默认优先 mediainfo，失败再回退 ffprobe/ffmpeg/wave。
+后续流程里已经转成标准 WAV 的内部文件会优先用 Python `wave` 读取时长，减少子进程调用。
 
 ### 2) 为什么要统一转 WAV？
 
