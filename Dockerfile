@@ -1,4 +1,4 @@
-FROM alpine:latest
+FROM alpine:3.23.4
 
 # 安装依赖，包括 python3、python3-venv、ffmpeg、bash 等
 RUN apk update \
@@ -29,9 +29,6 @@ RUN chmod +x /start.sh
 
 # 暴露端口
 EXPOSE 8080
-
-# 清理 pip 缓存和多余软件
-RUN pip3 cache purge
 
 # 启动命令
 CMD ["sh", "/start.sh"]
