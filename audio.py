@@ -31,10 +31,16 @@ from dotenv import load_dotenv
 
 # 环境变量：
 # BAILIAN_TOKEN：阿里云百炼 Token
+# API_CONCURRENCY：百炼 API 并发请求数（整数，默认10）
+# API_SEGMENT_LENGTH：百炼 API 请求音频最大切片长度（整数秒，默认175）
 # FFMPEG_WORKS：静音裁剪时使用的 ffmpeg 并发线程数（整数，默认16）
+# FFMPEG_SEGMENT_LENGTH：静音裁剪时使用的单个音频切片长度（整数秒，默认5）
 # SILENT_INTERVAL：静音裁剪时使用的音频静音区间长度（整数毫秒，默认700）
-# SEGMENT_LENGTH：静音裁剪时使用的单个音频切片长度（整数秒，默认3）
 # PADDING_LENGTH：静音裁剪时使用音频分片合并填充区间长度（整数毫秒，默认100）
+# ASR_RETRY_MAX_ATTEMPTS：百炼 API 调用最大重试次数（整数，默认4）
+# ASR_RETRY_INITIAL_DELAY：百炼 API 调用初始重试等待秒数（数字，默认0.5）
+# ASR_RETRY_FACTOR：百炼 API 调用重试退避倍数（数字，默认2.0）
+# ASR_RETRY_MAX_DELAY：百炼 API 调用最大重试等待秒数（数字，默认8.0）
 
 load_dotenv()
 
@@ -64,13 +70,48 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def get_positive_int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+        if parsed > 0:
+            return parsed
+    except ValueError:
+        pass
+    logger.warning("环境变量 %s=%r 非正整数，使用默认值 %d", name, value, default)
+    return default
+
+
+def get_positive_float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        parsed = float(value)
+        if parsed > 0:
+            return parsed
+    except ValueError:
+        pass
+    logger.warning("环境变量 %s=%r 非正数，使用默认值 %s", name, value, default)
+    return default
+
+
 API_TOKENS = [t.strip() for t in os.getenv("API_TOKEN", "").split(",") if t.strip()]
+API_CONCURRENCY = get_positive_int_env("API_CONCURRENCY", 10)
+API_SEGMENT_LENGTH = get_positive_int_env("API_SEGMENT_LENGTH", 175)
+ASR_RETRY_MAX_ATTEMPTS = get_positive_int_env("ASR_RETRY_MAX_ATTEMPTS", 4)
+ASR_RETRY_INITIAL_DELAY = get_positive_float_env("ASR_RETRY_INITIAL_DELAY", 0.5)
+ASR_RETRY_FACTOR = get_positive_float_env("ASR_RETRY_FACTOR", 2.0)
+ASR_RETRY_MAX_DELAY = get_positive_float_env("ASR_RETRY_MAX_DELAY", 8.0)
 
 dashscope_api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("BAILIAN_TOKEN")
 dashscope.api_key = dashscope_api_key
 
 bearer_scheme = HTTPBearer()
-executor = ThreadPoolExecutor(max_workers=max(4, (os.cpu_count() or 1) * 2))
+executor = ThreadPoolExecutor(max_workers=max(API_CONCURRENCY, 4, (os.cpu_count() or 1) * 2))
 
 DEFAULT_MODEL = "qwen3-asr-flash"
 
@@ -424,7 +465,7 @@ def split_wav_by_silence_groups(
     keep_ms: int = 100,
     silence_thresh: Optional[int] = None,
     sample_rate: Optional[int] = None,
-    max_segment_len_s: int = 180,
+    max_segment_len_s: int = API_SEGMENT_LENGTH,
     opus_bitrate: str = "32k",
     out_dir: Optional[str] = None,
     keep_temp_wavs: bool = True,
@@ -658,13 +699,15 @@ def call_qwen3_asr_blocking(segment_path: str, model: str = "qwen3-asr-flash", a
 async def recognize_segments_concurrently(
     segments: List[dict],
     model: str,
-    max_concurrency: int = 15,
+    max_concurrency: Optional[int] = None,
     retry_params: dict = None,
     asr_options: Optional[dict] = None,
     prompt: str = "",
 ):
     """并发识别 segments，按 index 保序返回结果列表。"""
     retry_params = retry_params or {}
+    if max_concurrency is None:
+        max_concurrency = API_CONCURRENCY
     semaphore = asyncio.Semaphore(max_concurrency)
 
     async def worker(seg):
@@ -943,10 +986,10 @@ async def remove_silence_by_fixed_slices_and_merge(
     max_workers: 并发线程数，优先使用传入值；若为 None 则读取环境变量 FFMPEG_WORKS（正整数），
     否则默认使用 16。
     """
-    # 解析音频切片长度优先级：传入 > 环境变量 SEGMENT_LENGTH > 默认 5 秒
+    # 解析音频切片长度优先级：传入 > 环境变量 FFMPEG_SEGMENT_LENGTH > 默认 5 秒
     try:
         if slice_s is None:
-            env_v = os.getenv("SEGMENT_LENGTH")
+            env_v = os.getenv("FFMPEG_SEGMENT_LENGTH")
             if env_v:
                 try:
                     slice_s = int(env_v)
@@ -1167,10 +1210,10 @@ async def process_audio_file(
             raise HTTPException(status_code=500, detail=f"获取音频信息失败: {str(e)}")
 
         retry_params = {
-            "max_attempts": 4,
-            "initial_delay": 0.5,
-            "factor": 2.0,
-            "max_delay": 8.0,
+            "max_attempts": ASR_RETRY_MAX_ATTEMPTS,
+            "initial_delay": ASR_RETRY_INITIAL_DELAY,
+            "factor": ASR_RETRY_FACTOR,
+            "max_delay": ASR_RETRY_MAX_DELAY,
         }
 
         try:
@@ -1201,7 +1244,7 @@ async def process_audio_file(
                 keep_ms=keep_ms,
                 silence_thresh=None,
                 sample_rate=sample_rate,
-                max_segment_len_s=175,
+                max_segment_len_s=API_SEGMENT_LENGTH,
                 opus_bitrate="32k",
                 out_dir=out_dir,
                 keep_temp_wavs=True,
@@ -1220,7 +1263,6 @@ async def process_audio_file(
             recognize_results = await recognize_segments_concurrently(
                 segments,
                 resolved_model,
-                max_concurrency=5,
                 retry_params=retry_params,
                 asr_options=asr_opts_for_segments,
                 prompt=prompt,

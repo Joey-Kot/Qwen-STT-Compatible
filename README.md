@@ -37,10 +37,15 @@ docker run -d \
   --restart always \
   -e API_TOKEN="sk-aaa,sk-bbb" \
   -e DASHSCOPE_API_KEY="sk-xxx" \
+  -e API_SEGMENT_LENGTH="175" \
   -e FFMPEG_WORKS="32" \
+  -e FFMPEG_SEGMENT_LENGTH="5" \
   -e SILENT_INTERVAL="700" \
-  -e SEGMENT_LENGTH="5" \
   -e PADDING_LENGTH="100" \
+  -e ASR_RETRY_MAX_ATTEMPTS="4" \
+  -e ASR_RETRY_INITIAL_DELAY="0.5" \
+  -e ASR_RETRY_FACTOR="2.0" \
+  -e ASR_RETRY_MAX_DELAY="8.0" \
   -e UVICORN_WORKERS="16" \
   bailian-audio:latest
 ```
@@ -55,10 +60,15 @@ docker run -d \
 ```bash
 API_TOKEN="sk-aaa,sk-bbb"
 DASHSCOPE_API_KEY="sk-xxx"
+API_SEGMENT_LENGTH="175"
 FFMPEG_WORKS="32"
+FFMPEG_SEGMENT_LENGTH="5"
 SILENT_INTERVAL="700"
-SEGMENT_LENGTH="5"
 PADDING_LENGTH="100"
+ASR_RETRY_MAX_ATTEMPTS="4"
+ASR_RETRY_INITIAL_DELAY="0.5"
+ASR_RETRY_FACTOR="2.0"
+ASR_RETRY_MAX_DELAY="8.0"
 UVICORN_WORKERS="16"
 ```
 
@@ -120,10 +130,18 @@ DASHSCOPE_API_KEY="sk-xxx"
 BAILIAN_TOKEN="sk-xxx"
 
 # 静音裁剪/切片相关（可选）
+API_CONCURRENCY="10"     # 百炼 API 并发请求数，默认 10
+API_SEGMENT_LENGTH="175" # 百炼 API 请求音频最大切片长度(s)，默认 175
 FFMPEG_WORKS="16"        # 固定切片并发裁剪线程数，默认 16
+FFMPEG_SEGMENT_LENGTH="5" # 固定切片长度(s)，默认 5
 SILENT_INTERVAL="700"    # 静音判定的最短持续时间(ms)，默认 700
-SEGMENT_LENGTH="5"       # 固定切片长度(s)，默认 5
 PADDING_LENGTH="100"     # 非静音片段前后保留填充(ms)，默认 100
+
+# 百炼 API 重试相关（可选）
+ASR_RETRY_MAX_ATTEMPTS="4"   # 最大尝试次数，默认 4
+ASR_RETRY_INITIAL_DELAY="0.5" # 初始重试等待秒数，默认 0.5
+ASR_RETRY_FACTOR="2.0"       # 重试退避倍数，默认 2.0
+ASR_RETRY_MAX_DELAY="8.0"    # 最大重试等待秒数，默认 8.0
 ```
 
 ### 3) 启动服务
@@ -249,7 +267,8 @@ Qwen3 ASR 统一走 `16000` 采样率。
 
 * `SILENT_INTERVAL`（默认 700ms）：越大越“保守”，更不容易把停顿当静音切掉；越小裁剪更激进。
 * `PADDING_LENGTH`（默认 100ms）：建议不要为 0，避免咬字/爆破音被切掉。
-* `SEGMENT_LENGTH`（默认 5s）：切片越短越利于低峰值与局部阈值，但文件数变多；一般 3~8s 是比较稳的区间。
+* `FFMPEG_SEGMENT_LENGTH`（默认 5s）：切片越短越利于低峰值与局部阈值，但文件数变多；一般 3~8s 是比较稳的区间。
+* `API_SEGMENT_LENGTH`（默认 175s）：发起百炼 API 请求前的音频分组最长秒数；越小请求更细碎，越大单次请求音频更长。
 * `FFMPEG_WORKS`：按 CPU 核数与负载调，建议从 8/16 起步。
 
 ## 2) 纯净音频流切片并发加速转写（尽量不断句、不硬切）
@@ -272,7 +291,7 @@ Qwen3 ASR 统一走 `16000` 采样率。
 
 * 先用 silencedetect 找到静音区间
 * 再反转得到非静音区间（连续说话的片段）
-* 然后把这些非静音区间按时间轴累积成“组”，每组最长 `max_segment_len_s`（代码里用 175 秒）
+* 然后把这些非静音区间按时间轴累积成“组”，每组最长由 `API_SEGMENT_LENGTH` 控制（默认 175 秒）
 
 #### B. preserve_internal_silence=True：只按组导出“连续区间”，保留组内静音
 
@@ -286,7 +305,7 @@ Qwen3 ASR 统一走 `16000` 采样率。
 
 #### C. 尽量不硬切：只有一种情况会切
 
-* 如果某个“非静音 interval”自身长度 **超过 max_segment_len_s**，才会在 interval 内部做硬切（否则不拆 interval，而是把它作为下一组开头）。
+* 如果某个“非静音 interval”自身长度 **超过 API_SEGMENT_LENGTH**，才会在 interval 内部做硬切（否则不拆 interval，而是把它作为下一组开头）。
 
 ### 并发识别与保序拼接
 
