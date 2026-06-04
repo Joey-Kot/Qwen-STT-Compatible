@@ -347,3 +347,7 @@ Qwen3 ASR 统一走 `16000` 采样率。
 * 生产环境建议限制 CORS 源（目前为 `*`）
 * 为 FastAPI / Uvicorn 配置反向代理（Nginx）并设置上传大小、超时
 * 日志中已带 RequestID（ContextVar），便于排障追踪
+
+## 许可证
+
+本项目按 GNU General Public License v3.0 or later（GPLv3+）授权，详见 [LICENSE](LICENSE)。
