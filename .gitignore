@@ -1,0 +1,6 @@
+qwen-stt-compatible
+/server
+third_party/
+dist/
+temp/
+__pycache__/

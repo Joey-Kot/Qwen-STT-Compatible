@@ -1,353 +1,307 @@
-# Smart Audio Backend - 智能语音识别预处理后端服务
+# Qwen STT Compatible
 
-> **一个适合个人/生产的语音转写后端，面向长音频的“静音大幅裁剪 + 低资源占用”预处理，并对纯净音频流进行“尽量不硬切”的并发切片转写，显著提升吞吐与文本连贯性。**
+Qwen STT Compatible 是一个 Go 实现的 OpenAI 风格语音转写服务。HTTP 层负责鉴权、上传、分片并发调用 DashScope ASR；音频预处理由 Go 依赖库 [Joey-Kot/ASR-Audio-Preprocess](https://github.com/Joey-Kot/ASR-Audio-Preprocess) 完成。
 
-* **兼容 OpenAI 风格接口**：`/v1/audio/transcriptions`
-* **兼容自定义上传接口**：`/upload_audio`
-* **核心能力**：
+## 特性
 
-  1. **静音裁剪**：对长音频进行“无效静音大幅裁剪”，输出高质量、高密度的有效音频流，并且资源占用低
-  2. **切片并发加速转写**：对“纯净音频流”切片后并发识别，加速整体耗时，同时尽量不破坏语义连续性（大多数情况下不会硬切）
+- 兼容 `POST /v1/audio/transcriptions`
+- 支持 Bearer Token 鉴权，`API_TOKEN` 可用逗号配置多个 token
+- 预处理链路：转 WAV、固定分片并发静音裁剪、合并、按静音区间生成 ASR 分片
+- 复刻 DashScope Python SDK 的请求流程：获取 OSS 上传策略、上传音频分片，再按模型前缀调用对应 REST endpoint
+- 支持 Qwen3-ASR-Flash、Fun-ASR-Flash、Fun-ASR、Paraformer 系列非实时模型，模型名原样透传给 DashScope
+- 支持非流式 JSON 返回，也支持 `stream=true` 的伪 SSE 流式返回
+- 产物是单个可运行二进制文件
 
-## 功能特性
+## API
 
-* ✅ 支持多种音频输入（服务端统一转 WAV + 单声道 + 目标采样率）
-* ✅ Bearer Token 鉴权（支持多个 token）
-* ✅ 自动清理临时文件目录，避免磁盘堆积
-* ✅ 支持 Qwen3 ASR 识别路径（静音增强后切片 + 并发识别 + 拼接输出）
+### `POST /v1/audio/transcriptions`
 
-## Docker 部署
+`multipart/form-data` 字段：
 
-### 1) Dockerfile 构建镜像
+- `file`：音频文件
+- `model`：模型名，原样透传给 DashScope；支持清单见下方“支持模型”
+- `language`：可选，两字母语言码，如 `zh`、`en`
+- `prompt`：可选，作为 system prompt
+- `enable_lid`：可选，默认读取服务配置 `ENABLE_LID` / `-enable-lid`
+- `enable_itn`：可选，默认读取服务配置 `ENABLE_ITN` / `-enable-itn`
+- `stream`：可选，默认 `false`；设为 `true` 时返回 SSE
 
-```bash
-docker build -t bailian-audio:latest .
-```
-
-### 2) 运行容器
-
-#### 方式 1：直接 docker run（推荐）
-
-```bash
-docker rm -f bailian-audio >/dev/null 2>&1 || true
-
-docker run -d \
-  -p 8888:8080 \
-  --name bailian-audio \
-  --restart always \
-  -e API_TOKEN="sk-aaa,sk-bbb" \
-  -e DASHSCOPE_API_KEY="sk-xxx" \
-  -e API_SEGMENT_LENGTH="175" \
-  -e FFMPEG_WORKS="32" \
-  -e FFMPEG_SEGMENT_LENGTH="5" \
-  -e SILENT_INTERVAL="700" \
-  -e PADDING_LENGTH="100" \
-  -e ASR_RETRY_MAX_ATTEMPTS="4" \
-  -e ASR_RETRY_INITIAL_DELAY="0.5" \
-  -e ASR_RETRY_FACTOR="2.0" \
-  -e ASR_RETRY_MAX_DELAY="8.0" \
-  -e UVICORN_WORKERS="16" \
-  bailian-audio:latest
-```
-
-> 优先读取 `DASHSCOPE_API_KEY`，否则读取 `BAILIAN_TOKEN` 作为Token。
-> `API_TOKEN` 支持逗号分隔多个 token。
-
-#### 方式 2：使用 `.env` 文件
-
-在宿主机创建 `.env`：
-
-```bash
-API_TOKEN="sk-aaa,sk-bbb"
-DASHSCOPE_API_KEY="sk-xxx"
-API_SEGMENT_LENGTH="175"
-FFMPEG_WORKS="32"
-FFMPEG_SEGMENT_LENGTH="5"
-SILENT_INTERVAL="700"
-PADDING_LENGTH="100"
-ASR_RETRY_MAX_ATTEMPTS="4"
-ASR_RETRY_INITIAL_DELAY="0.5"
-ASR_RETRY_FACTOR="2.0"
-ASR_RETRY_MAX_DELAY="8.0"
-UVICORN_WORKERS="16"
-```
-
-运行：
-
-```bash
-docker run -d \
-  -p 8888:8080 \
-  --name bailian-audio \
-  --restart always \
-  --env-file .env \
-  bailian-audio:latest
-```
-
-### 3) 验证服务
-
-```bash
-curl -s http://localhost:8888/docs | head
-```
-
-或直接请求转写接口（示例）：
-
-```bash
-curl -X POST "http://localhost:8888/v1/audio/transcriptions" \
-  -H "Authorization: Bearer sk-aaa" \
-  -F "file=@demo.wav" \
-  -F "model=asr" \
-  -F "language=zh" \
-  -F "enable_lid=true" \
-  -F "enable_itn=false"
-```
-
-## 快速开始
-
-### 1) 环境依赖
-
-**系统依赖：**
-
-* `ffmpeg`
-* `mediainfo`（用于更稳健地获取时长；代码里有 ffprobe/ffmpeg/wave 回退）
-
-**Python 依赖：**
-
-* `fastapi`, `uvicorn`, `python-multipart`, `python-dotenv`
-* `dashscope`
-* `ffmpeg-python`
-
-### 2) 环境变量配置
-
-创建 `.env`（或用容器环境变量注入）：
-
-```bash
-# 鉴权：支持逗号分隔多个 Token
-API_TOKEN="sk-aaa,sk-bbb"
-
-# DashScope/百炼 Token（二选一均可，代码优先 DASHSCOPE_API_KEY，否则取 BAILIAN_TOKEN）
-DASHSCOPE_API_KEY="sk-xxx"
-# 或：
-BAILIAN_TOKEN="sk-xxx"
-
-# 静音裁剪/切片相关（可选）
-API_CONCURRENCY="10"     # 百炼 API 并发请求数，默认 10
-API_SEGMENT_LENGTH="175" # 百炼 API 请求音频最大切片长度(s)，默认 175
-FFMPEG_WORKS="16"        # 固定切片并发裁剪线程数，默认 16
-FFMPEG_SEGMENT_LENGTH="5" # 固定切片长度(s)，默认 5
-SILENT_INTERVAL="700"    # 静音判定的最短持续时间(ms)，默认 700
-PADDING_LENGTH="100"     # 非静音片段前后保留填充(ms)，默认 100
-
-# 百炼 API 重试相关（可选）
-ASR_RETRY_MAX_ATTEMPTS="4"   # 最大尝试次数，默认 4
-ASR_RETRY_INITIAL_DELAY="0.5" # 初始重试等待秒数，默认 0.5
-ASR_RETRY_FACTOR="2.0"       # 重试退避倍数，默认 2.0
-ASR_RETRY_MAX_DELAY="8.0"    # 最大重试等待秒数，默认 8.0
-```
-
-### 3) 启动服务
-
-本地启动（示例）：
-
-```bash
-uvicorn bailian-audio-api:app --host 0.0.0.0 --port 8080 --workers 4
-```
-
-> `--workers` 按机器核数与负载调整。部署文档提供了 `uvicorn --workers 16` 等参考配置。
-
-## API 使用
-
-### 鉴权
-
-所有接口需要 `Authorization: Bearer <token>`，token 必须在 `API_TOKEN` 环境变量中。
-
-### 1) OpenAI 风格接口：`POST /v1/audio/transcriptions`
-
-**表单字段：**
-
-* `file`：音频文件（multipart/form-data）
-* `model`：模型名（必填）
-* `language`：可选，两字母语言码，如 `zh` / `en`（会被校验格式）
-* `prompt`：可选，主要用于 qwen3-asr 的 system prompt
-* `enable_lid`：可选，是否启用语言识别，默认 `true`
-* `enable_itn`：可选，是否启用逆文本归一化，默认 `false`
-
-**示例：**
+示例：
 
 ```bash
 curl -X POST "http://localhost:8080/v1/audio/transcriptions" \
   -H "Authorization: Bearer sk-aaa" \
   -F "file=@demo.wav" \
-  -F "model=asr" \
+  -F "model=qwen3-asr-flash" \
   -F "language=zh" \
-  -F "prompt=请尽量保留口语表达" \
   -F "enable_lid=true" \
   -F "enable_itn=false"
 ```
 
-**响应：**
+非流式响应：
 
 ```json
-{ "status": "success", "text": "..." }
+{"status":"success","text":"..."}
 ```
 
-### 2) 兼容上传接口：`POST /upload_audio`
+伪流式响应：
 
-字段与返回基本一致：`audio` 作为文件字段名；同样支持 `enable_lid` / `enable_itn` 表单字段。
+```text
+data: {"type":"transcript.text.delta","delta":"..."}
 
-## 支持的模型与采样率策略
+data: {"type":"transcript.text.done","text":"..."}
 
-服务支持 Qwen3 ASR 模型，并为每个模型固定采样率（用于转 WAV、编码 Opus 等）。
+data: [DONE]
+```
 
-**常用别名：**
+## 支持模型
 
-* `asr` → `qwen3-asr-flash`
-* `asr-0908` → `qwen3-asr-flash-2025-09-08`
+服务不做模型别名转换，`model` 字段会原样透传给 DashScope；内部只按模型名前缀选择对应 endpoint 和请求结构。
 
-Qwen3 ASR 统一走 `16000` 采样率。
+| 模型前缀 | 示例模型名 | 调用方式 |
+|---|---|---|
+| `qwen3-asr-flash*` | `qwen3-asr-flash`、`qwen3-asr-flash-2025-09-08` | `POST /services/aigc/multimodal-generation/generation`，Qwen3 ASR multimodal 请求结构 |
+| `fun-asr-flash*` | `fun-asr-flash-2026-06-15` | `POST /services/aigc/multimodal-generation/generation`，`input_audio` 请求结构 |
+| `fun-asr*` | `fun-asr` | `POST /services/audio/asr/transcription` 异步任务，轮询 `/tasks/<task_id>` |
+| `paraformer*` | `paraformer-v1` 等 Paraformer 全量模型名 | `POST /services/audio/asr/transcription` 异步任务，轮询 `/tasks/<task_id>` |
 
-# 核心设计与实现细节
+需要使用带日期或版本后缀的模型时，直接传完整模型名即可，例如 `qwen3-asr-flash-2025-09-08` 或 `fun-asr-flash-2026-06-15`。
 
-## 1) 静音裁剪：输出高质量高密度音频流（低资源占用）
+## 环境变量
 
-### 目标
+```bash
+API_TOKEN="sk-aaa,sk-bbb"
+DASHSCOPE_API_KEY="sk-xxx"
+DASHSCOPE_HTTP_BASE_URL="https://dashscope.aliyuncs.com/api/v1"
 
-现实输入里常见问题：
+LISTEN=":8080"
+MAX_UPLOAD_MB="500"
+UPSTREAM_TIMEOUT_SECONDS="3600"
 
-* 很长的会议录音/监控录音/屏录里**大量静音、等待、无效段**
-* 直接送入识别模型会：耗时长、费用高、吞吐差、结果还容易被噪声/空白影响
+API_CONCURRENCY="10"
+API_SEGMENT_LENGTH="175"
+FFMPEG_WORKS="16"
+FFMPEG_SEGMENT_LENGTH="5"
+SILENT_INTERVAL="700"
+PADDING_LENGTH="100"
+OUTPUT_BITRATE="128k"
+ENABLE_LID="true"
+ENABLE_ITN="false"
 
-因此服务会把输入音频预处理为：
+ASR_RETRY_MAX_ATTEMPTS="4"
+ASR_RETRY_INITIAL_DELAY="0.5"
+ASR_RETRY_FACTOR="2.0"
+ASR_RETRY_MAX_DELAY="8.0"
+```
 
-> **“高密度有效语音流”**：尽可能删除长静音，保留必要上下文边界（padding），并保持语音连续、自然。
+如果使用百炼业务空间域名，将 `DASHSCOPE_HTTP_BASE_URL` 设置为 `https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/api/v1`。
+`MAX_UPLOAD_MB` 控制单个上传音频文件大小上限，默认 `500`，也可用启动参数 `-max-upload-mb` 覆盖。
+ASR 分片会显式输出为 `ogg` 容器、`libopus` 编码、`16000Hz`、`s16` 采样格式；`OUTPUT_BITRATE` 控制 Opus 码率，默认 `128k`。
+`ENABLE_LID` 和 `ENABLE_ITN` 分别控制请求未显式传入 `enable_lid`、`enable_itn` 时的默认值；请求字段一旦传入，会覆盖服务配置默认值。
+生产部署建议用环境变量传入 `API_TOKEN` 和 `DASHSCOPE_API_KEY`，避免密钥出现在进程命令行里；本地测试也可以使用 `-api-token` 和 `-dashscope-api-key`。
 
-### 总体流程（高层）
+## 本地构建
 
-对于任意上传音频：
+预处理库需要 `libav` build tag，并且需要 FFmpeg/libav 静态依赖。项目脚本会委托当前 `go.mod` 中 `github.com/Joey-Kot/ASR-Audio-Preprocess` 依赖包提供的构建脚本：
 
-1. 统一转码为 **单声道 WAV**，并按模型要求重采样
-2. 进入“固定切片 + 局部静音裁剪 + 合并”的主策略：`remove_silence_by_fixed_slices_and_merge`
-3. 得到一份“静音大幅被删除”的合并 WAV（更短、更密、更干净）
+```bash
+./scripts/bootstrap-static-audio-deps.sh
 
-### 为什么采用“固定切片 + 局部裁剪 + 合并”？
+CGO_ENABLED=1 \
+PKG_CONFIG_PATH="$PWD/third_party/ffmpeg-audio/lib/pkgconfig" \
+PKG_CONFIG="pkg-config --static" \
+go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-static'" -o qwen-stt-compatible ./cmd/server
+```
 
-不是直接对整段音频做一次 `silencedetect` 然后一次性拼接，而是：
+完整启动参数示例：
 
-* **先用 ffmpeg segment muxer 一次性切成固定秒数的小片**（例如 5s）
-* **对每个小片独立跑静音检测与裁剪**（局部决策）
-* **并发处理这些小片**（线程池，数量由 `FFMPEG_WORKS` 控制）
-* **把裁剪后的有效小片按顺序合并回去**（优先 concat demuxer，失败再 filter_complex fallback）
+```bash
+OUTPUT_BITRATE="128k" ./qwen-stt-compatible \
+  -api-token "sk-aaa,sk-bbb" \
+  -dashscope-api-key "sk-xxx" \
+  -listen ":8080" \
+  -dashscope-base-url "https://dashscope.aliyuncs.com/api/v1" \
+  -max-upload-mb 500 \
+  -upstream-timeout 1h \
+  -api-concurrency 10 \
+  -api-segment-length 175s \
+  -fixed-slice-length 5s \
+  -fixed-slice-workers 16 \
+  -silent-interval 700ms \
+  -padding 100ms \
+  -enable-lid 1 \
+  -enable-itn 0 \
+  -asr-retry-max-attempts 3 \
+  -asr-retry-initial-delay 500ms \
+  -asr-retry-factor 2.0 \
+  -asr-retry-max-delay 8s
+```
 
-这么做的收益很明确：
+生产部署建议把 token 放到环境变量，避免密钥出现在进程命令行：
 
-1. **资源占用更可控**
+```bash
+API_TOKEN="sk-aaa,sk-bbb" \
+DASHSCOPE_API_KEY="sk-xxx" \
+OUTPUT_BITRATE="128k" \
+ENABLE_LID="true" \
+ENABLE_ITN="false" \
+./qwen-stt-compatible \
+  -listen ":8080" \
+  -dashscope-base-url "https://dashscope.aliyuncs.com/api/v1" \
+  -max-upload-mb 500 \
+  -upstream-timeout 1h \
+  -api-concurrency 10 \
+  -api-segment-length 175s \
+  -fixed-slice-length 5s \
+  -fixed-slice-workers 16 \
+  -silent-interval 700ms \
+  -padding 100ms \
+  -enable-lid 1 \
+  -enable-itn 0 \
+  -asr-retry-max-attempts 3 \
+  -asr-retry-initial-delay 500ms \
+  -asr-retry-factor 2.0 \
+  -asr-retry-max-delay 8s
+```
 
-* 单次 ffmpeg 处理对象变小，内存峰值低
-* 并发度可配置（不把机器打爆）
+启动参数参考：
 
-2. **静音阈值自适应更可靠**
-   静音检测依赖音量阈值。整段音频如果音量跨度很大，单阈值容易失效。你实现里会先用 `volumedetect` 得到 `max_volume/mean_volume`，再生成一组候选阈值（例如基于 max 减不同 offset），逐个尝试直到检测到静音区间。
-   对短片做这套逻辑，往往更稳定。
+| 参数 | 默认值 | 对应环境变量 | 说明 |
+|---|---:|---|---|
+| `-listen` | `:8080` | `LISTEN` | HTTP 监听地址 |
+| `-api-token` | 空 | `API_TOKEN` | 兼容接口鉴权 token，多个 token 用逗号分隔 |
+| `-dashscope-api-key` | 空 | `DASHSCOPE_API_KEY` | DashScope API Key |
+| `-dashscope-base-url` | `https://dashscope.aliyuncs.com/api/v1` | `DASHSCOPE_HTTP_BASE_URL` | DashScope HTTP API base URL |
+| `-max-upload-mb` | `500` | `MAX_UPLOAD_MB` | 单个上传音频文件大小上限，单位 MiB |
+| `-upstream-timeout` | `1h` | `UPSTREAM_TIMEOUT_SECONDS` | DashScope 请求超时时间 |
+| `-api-concurrency` | `10` | `API_CONCURRENCY` | ASR 分片并发请求数 |
+| `-api-segment-length` | `175s` | `API_SEGMENT_LENGTH` | 单个 ASR 分片最大时长 |
+| `-fixed-slice-length` | `5s` | `FFMPEG_SEGMENT_LENGTH` | 固定分片静音裁剪的切片长度 |
+| `-fixed-slice-workers` | `16` | `FFMPEG_WORKS` | 固定分片静音裁剪并发数 |
+| `-silent-interval` | `700ms` | `SILENT_INTERVAL` | 最短静音判定时长 |
+| `-padding` | `100ms` | `PADDING_LENGTH` | 非静音片段前后保留时长 |
+| `-enable-lid` | `true` | `ENABLE_LID` | 请求未传 `enable_lid` 时的默认值，支持 `0/1` 或 `true/false` |
+| `-enable-itn` | `false` | `ENABLE_ITN` | 请求未传 `enable_itn` 时的默认值，支持 `0/1` 或 `true/false` |
+| `-asr-retry-max-attempts` | `4` | `ASR_RETRY_MAX_ATTEMPTS` | ASR 调用最大尝试次数 |
+| `-asr-retry-initial-delay` | `500ms` | `ASR_RETRY_INITIAL_DELAY` | ASR 重试初始等待时间 |
+| `-asr-retry-factor` | `2.0` | `ASR_RETRY_FACTOR` | ASR 重试指数退避倍数 |
+| `-asr-retry-max-delay` | `8s` | `ASR_RETRY_MAX_DELAY` | ASR 重试最大等待时间 |
 
-3. **失败隔离**
-   某个切片裁剪失败可以跳过或回退，不影响整段处理结果（最终会过滤掉过短片段）。
+`OUTPUT_BITRATE` 目前只通过环境变量配置，默认 `128k`。
 
-### 静音裁剪的关键点
+## Docker
 
-`trim_long_silences_from_wav` 逻辑可以概括为：
+```bash
+docker build -t qwen-stt-compatible:latest .
+docker run -d \
+  -p 8888:8080 \
+  --name qwen-stt-compatible \
+  --restart always \
+  -e API_TOKEN="sk-aaa,sk-bbb" \
+  -e DASHSCOPE_API_KEY="sk-xxx" \
+  -e DASHSCOPE_HTTP_BASE_URL="https://dashscope.aliyuncs.com/api/v1" \
+  -e LISTEN=":8080" \
+  -e MAX_UPLOAD_MB="500" \
+  -e UPSTREAM_TIMEOUT_SECONDS="3600" \
+  -e API_CONCURRENCY="10" \
+  -e API_SEGMENT_LENGTH="175" \
+  -e FFMPEG_WORKS="16" \
+  -e FFMPEG_SEGMENT_LENGTH="5" \
+  -e SILENT_INTERVAL="700" \
+  -e PADDING_LENGTH="100" \
+  -e OUTPUT_BITRATE="128k" \
+  -e ENABLE_LID="true" \
+  -e ENABLE_ITN="false" \
+  -e ASR_RETRY_MAX_ATTEMPTS="3" \
+  -e ASR_RETRY_INITIAL_DELAY="0.5" \
+  -e ASR_RETRY_FACTOR="2.0" \
+  -e ASR_RETRY_MAX_DELAY="8.0" \
+  qwen-stt-compatible:latest
+```
 
-1. 用 `ffmpeg -af volumedetect` 估计音量范围（mean/max）
-2. 构造一系列 `silencedetect=noise=XdB:d=Y` 阈值尝试序列，直到检测到静音区间
-3. 得到静音区间后，做“反转”得到非静音区间
-4. 对非静音区间做 **padding 扩展**：前后各保留 `PADDING_LENGTH`（ms）避免语音边界被切坏
-5. 用 `atrim + concat` 的 filter_complex 把多个非静音片段无缝拼接成新音频
+## DashScope 请求说明
 
-> 这一步是“高密度音频流”的本质：**在不破坏内容的前提下最大化删除无效静音**。
+所有本地音频分片都会先按 DashScope SDK 的临时 OSS 流程上传：
 
-### 关键参数建议
+- 上传策略：`GET https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model=<model>`
+- OSS 上传：按策略字段 multipart 上传音频文件，返回 `oss://...`
+- 后续 DashScope 请求带 `X-DashScope-OssResourceResolve: enable`
 
-* `SILENT_INTERVAL`（默认 700ms）：越大越“保守”，更不容易把停顿当静音切掉；越小裁剪更激进。
-* `PADDING_LENGTH`（默认 100ms）：建议不要为 0，避免咬字/爆破音被切掉。
-* `FFMPEG_SEGMENT_LENGTH`（默认 5s）：切片越短越利于低峰值与局部阈值，但文件数变多；一般 3~8s 是比较稳的区间。
-* `API_SEGMENT_LENGTH`（默认 175s）：发起百炼 API 请求前的音频分组最长秒数；越小请求更细碎，越大单次请求音频更长。
-* `FFMPEG_WORKS`：按 CPU 核数与负载调，建议从 8/16 起步。
+### `qwen3-asr-flash*`
 
-## 2) 纯净音频流切片并发加速转写（尽量不断句、不硬切）
+DashScope Python SDK 的 `MultiModalConversation.call` 实际请求：
 
-当模型是 Qwen3 ASR（`qwen3-asr-flash*`）时，服务走“并发切片识别”路径：
+- ASR 调用：`POST <DASHSCOPE_HTTP_BASE_URL>/services/aigc/multimodal-generation/generation`
 
-### 整体思路
+请求体核心结构：
 
-1. 先得到 **静音裁剪后的合并 WAV（纯净高密度）**
-2. 再基于 `silencedetect` 的结果做“切片分组”，导出每段音频
-3. 将每段音频编码为 Opus（ogg/opus）
-4. 对每段音频并发调用 ASR
-5. **按 index 顺序拼接文本**，输出一份完整转写结果
+```json
+{
+  "model": "qwen3-asr-flash",
+  "input": {
+    "messages": [
+      {"role": "system", "content": [{"text": ""}]},
+      {"role": "user", "content": [{"audio": "oss://..."}]}
+    ]
+  },
+  "parameters": {
+    "result_format": "message",
+    "asr_options": {
+      "enable_lid": true,
+      "enable_itn": false,
+      "language": "zh"
+    }
+  }
+}
+```
 
-### “不影响完整性 / 大多数情况下不会硬切”的实现方式
+### `fun-asr-flash*`
 
-切片逻辑非常关键：`split_wav_by_silence_groups(preserve_internal_silence=True)`
+使用 multimodal generation endpoint：
 
-#### A. 切片依据：静音检测驱动的分组
+```json
+{
+  "model": "fun-asr-flash-2026-06-15",
+  "input": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_audio",
+            "input_audio": {
+              "data": "oss://..."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "parameters": {
+    "format": "ogg",
+    "sample_rate": "16000"
+  }
+}
+```
 
-* 先用 silencedetect 找到静音区间
-* 再反转得到非静音区间（连续说话的片段）
-* 然后把这些非静音区间按时间轴累积成“组”，每组最长由 `API_SEGMENT_LENGTH` 控制（默认 175 秒）
+### `fun-asr*` / `paraformer*`
 
-#### B. preserve_internal_silence=True：只按组导出“连续区间”，保留组内静音
+使用 `dashscope.audio.asr.Transcription.async_call` 同款异步任务：
 
-* `preserve_internal_silence=True` 表示：**分组仍然参考 silencedetect，但导出音频时不做组内静音删除**
-* 导出方式是 `-ss start -to end`，直接导出整段连续区间
+- 提交任务：`POST <DASHSCOPE_HTTP_BASE_URL>/services/audio/asr/transcription`
+- 轮询任务：`GET <DASHSCOPE_HTTP_BASE_URL>/tasks/<task_id>`
+- 子任务成功后下载 `transcription_url` 并提取文本
 
-这能带来两个核心收益：
+提交任务请求体：
 
-1. **组内停顿、语气词等仍被保留**，语义与节奏更自然
-2. 避免“过度裁剪”造成的上下文断裂，让 ASR 更稳定
-
-#### C. 尽量不硬切：只有一种情况会切
-
-* 如果某个“非静音 interval”自身长度 **超过 API_SEGMENT_LENGTH**，才会在 interval 内部做硬切（否则不拆 interval，而是把它作为下一组开头）。
-
-### 并发识别与保序拼接
-
-* `recognize_segments_concurrently` 用 `asyncio.Semaphore(max_concurrency)` 控制并发上限
-* 实际调用通过 `retry_blocking_call` 包装：失败会指数退避重试（默认最多 4 次）
-* 并发返回后按 `index` 排序，最终按顺序拼接文本输出，保证输出文本与音频时间顺序一致
-
-> “并发 + 保序”：吞吐提升明显，同时不牺牲最终文本连贯性。
-
-## 常见问题（FAQ）
-
-### 1) 为什么需要 mediainfo？
-
-用于更稳健地获取外部输入音频的时长；原始上传文件默认优先 mediainfo，失败再回退 ffprobe/ffmpeg/wave。
-后续流程里已经转成标准 WAV 的内部文件会优先用 Python `wave` 读取时长，减少子进程调用。
-
-### 2) 为什么要统一转 WAV？
-
-为了后续静音检测与切片处理一致、稳定；并能按模型要求固定采样率。
-
-### 3) Qwen3 ASR 为什么用 Opus？
-
-切片导出后会编码为 `ogg/opus`，再通过 MultiModalConversation 走 audio 输入，整体更适合网络/调用链路。
-
-### 4）额外的错误处理与占位符策略
-
-为了让调用方**显式感知“某段音频转写失败/无输出”**，服务在以下场景会在返回文本中插入占位符：
-
-* 当底层 ASR 返回结果中 `text` 字段存在，但内容为空字符串或仅包含空白字符时
-* 服务会将该段文本替换为：`【该段音频转录出错】`
-
-  * **不破坏响应结构**：仍然返回 `{"status":"success","text":"..."}`（当底层调用成功但内容为空时）
-  * **利于调用方自动化处理**：调用方可以在最终文本里搜索 `【...】` 快速定位异常段
-  * **方便重试/降级**：比如命中占位符后仅对相关切片重试，或切换模型/参数重跑
-
-## 安全与运维建议
-
-* 将 `API_TOKEN` 作为密钥对待，至少 32 位以上随机字符串
-* 生产环境建议限制 CORS 源（目前为 `*`）
-* 为 FastAPI / Uvicorn 配置反向代理（Nginx）并设置上传大小、超时
-* 日志中已带 RequestID（ContextVar），便于排障追踪
-
-## 许可证
-
-本项目按 GNU General Public License v3.0 or later（GPLv3+）授权，详见 [LICENSE](LICENSE)。
+```json
+{
+  "model": "fun-asr",
+  "input": {
+    "file_urls": ["oss://..."]
+  },
+  "parameters": {
+    "language_hints": ["zh"]
+  }
+}
+```
