@@ -17,6 +17,7 @@ RUN apt-get update \
 
 RUN --mount=type=cache,target=/root/.cache/go-build \
     set -eux; \
+    export JOBS="${JOBS:-2}"; \
     ./scripts/bootstrap-static-audio-deps.sh; \
     grep -q '#define CONFIG_ASPLIT_FILTER 1' third_party/src/ffmpeg-*/config_components.h; \
     CGO_ENABLED=1 \
