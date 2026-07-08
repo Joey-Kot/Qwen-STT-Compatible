@@ -26,7 +26,7 @@ func TestParseDefaultsMaxUploadTo500MiB(t *testing.T) {
 
 func TestParseMaxUploadFlagOverridesEnv(t *testing.T) {
 	t.Setenv("MAX_UPLOAD_MB", "600")
-	cfg, err := Parse([]string{"-max-upload-mb", "750"})
+	cfg, err := Parse([]string{"--max-upload-mb", "750"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,8 +38,7 @@ func TestParseMaxUploadFlagOverridesEnv(t *testing.T) {
 func TestParseTokenFlagsOverrideEnv(t *testing.T) {
 	t.Setenv("API_TOKEN", "env-a,env-b")
 	t.Setenv("DASHSCOPE_API_KEY", "env-dashscope")
-	t.Setenv("BAILIAN_TOKEN", "legacy-dashscope")
-	cfg, err := Parse([]string{"-api-token", "flag-a,flag-b", "-dashscope-api-key", "flag-dashscope"})
+	cfg, err := Parse([]string{"--api-token", "flag-a,flag-b", "--dashscope-api-key", "flag-dashscope"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,26 +53,13 @@ func TestParseTokenFlagsOverrideEnv(t *testing.T) {
 	}
 }
 
-func TestParseIgnoresLegacyDashScopeToken(t *testing.T) {
-	t.Setenv("DASHSCOPE_API_KEY", "")
-	t.Setenv("BAILIAN_TOKEN", "legacy-dashscope")
-	cfg, err := Parse(nil)
+func TestParseOutputBitrateFlagOverridesEnv(t *testing.T) {
+	t.Setenv("OUTPUT_BITRATE", "96k")
+	cfg, err := Parse([]string{"--output-bitrate", "64k"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DashScopeAPIKey != "" {
-		t.Fatalf("DashScopeAPIKey=%q want empty", cfg.DashScopeAPIKey)
-	}
-}
-
-func TestParseOutputBitrateIgnoresLegacyEnv(t *testing.T) {
-	t.Setenv("OUTPUT_BITRATE", "")
-	t.Setenv("OPUS_BITRATE", "64k")
-	cfg, err := Parse(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := cfg.OutputBitrate, "128k"; got != want {
+	if got, want := cfg.OutputBitrate, "64k"; got != want {
 		t.Fatalf("OutputBitrate=%q want %q", got, want)
 	}
 }
@@ -81,7 +67,7 @@ func TestParseOutputBitrateIgnoresLegacyEnv(t *testing.T) {
 func TestParseEnableDefaultsFromEnvAndFlags(t *testing.T) {
 	t.Setenv("ENABLE_LID", "false")
 	t.Setenv("ENABLE_ITN", "true")
-	cfg, err := Parse([]string{"-enable-lid", "1", "-enable-itn", "0"})
+	cfg, err := Parse([]string{"--enable-lid", "1", "--enable-itn", "0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +80,7 @@ func TestParseEnableDefaultsFromEnvAndFlags(t *testing.T) {
 }
 
 func TestParseEnableDefaultsAcceptTrueFalseFlags(t *testing.T) {
-	cfg, err := Parse([]string{"-enable-lid", "false", "-enable-itn", "true"})
+	cfg, err := Parse([]string{"--enable-lid", "false", "--enable-itn", "true"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,10 +98,10 @@ func TestParseRetryFlagsOverrideEnv(t *testing.T) {
 	t.Setenv("ASR_RETRY_FACTOR", "2")
 	t.Setenv("ASR_RETRY_MAX_DELAY", "8")
 	cfg, err := Parse([]string{
-		"-asr-retry-max-attempts", "7",
-		"-asr-retry-initial-delay", "750ms",
-		"-asr-retry-factor", "1.5",
-		"-asr-retry-max-delay", "12s",
+		"--asr-retry-max-attempts", "7",
+		"--asr-retry-initial-delay", "750ms",
+		"--asr-retry-factor", "1.5",
+		"--asr-retry-max-delay", "12s",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -131,5 +117,11 @@ func TestParseRetryFlagsOverrideEnv(t *testing.T) {
 	}
 	if got, want := cfg.Retry.MaxDelay.String(), "12s"; got != want {
 		t.Fatalf("Retry.MaxDelay=%s want %s", got, want)
+	}
+}
+
+func TestParseRejectsSingleDashFlag(t *testing.T) {
+	if _, err := Parse([]string{"-listen", ":9090"}); err == nil {
+		t.Fatal("Parse accepted single-dash flag")
 	}
 }

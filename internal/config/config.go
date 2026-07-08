@@ -80,6 +80,12 @@ func Parse(args []string) (Config, error) {
 
 	apiToken := strings.Join(cfg.APITokens, ",")
 	fs := flag.NewFlagSet("qwen-stt-compatible", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage of %s:\n", fs.Name())
+		fs.VisitAll(func(f *flag.Flag) {
+			fmt.Fprintf(fs.Output(), "  --%s\n    \t%s\n", f.Name, f.Usage)
+		})
+	}
 	fs.StringVar(&cfg.Listen, "listen", cfg.Listen, "listen address")
 	fs.StringVar(&apiToken, "api-token", apiToken, "comma-separated compatible API tokens")
 	fs.StringVar(&cfg.DashScopeAPIKey, "dashscope-api-key", cfg.DashScopeAPIKey, "DashScope API key")
@@ -90,6 +96,7 @@ func Parse(args []string) (Config, error) {
 	fs.IntVar(&cfg.FixedSliceWorkers, "fixed-slice-workers", cfg.FixedSliceWorkers, "fixed trim workers")
 	fs.DurationVar(&cfg.SilentInterval, "silent-interval", cfg.SilentInterval, "minimum silence interval")
 	fs.DurationVar(&cfg.Padding, "padding", cfg.Padding, "speech interval padding")
+	fs.StringVar(&cfg.OutputBitrate, "output-bitrate", cfg.OutputBitrate, "audio output bitrate")
 	fs.Var(boolValue{target: &cfg.EnableLID}, "enable-lid", "default enable_lid value for transcription requests, accepts 0/1 or true/false")
 	fs.Var(boolValue{target: &cfg.EnableITN}, "enable-itn", "default enable_itn value for transcription requests, accepts 0/1 or true/false")
 	fs.DurationVar(&cfg.UpstreamTimeout, "upstream-timeout", cfg.UpstreamTimeout, "DashScope request timeout")
@@ -98,28 +105,44 @@ func Parse(args []string) (Config, error) {
 	fs.Float64Var(&cfg.Retry.Factor, "asr-retry-factor", cfg.Retry.Factor, "DashScope ASR retry backoff factor")
 	fs.DurationVar(&cfg.Retry.MaxDelay, "asr-retry-max-delay", cfg.Retry.MaxDelay, "maximum DashScope ASR retry delay")
 	fs.Int64Var(&maxUploadMB, "max-upload-mb", maxUploadMB, "maximum upload size in MiB")
+	if err := validateDoubleDashArgs(args); err != nil {
+		return cfg, err
+	}
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
 	cfg.APITokens = splitTokens(apiToken)
 	if maxUploadMB <= 0 {
-		return cfg, fmt.Errorf("max-upload-mb must be positive")
+		return cfg, fmt.Errorf("--max-upload-mb must be positive")
 	}
 	if cfg.Retry.MaxAttempts <= 0 {
-		return cfg, fmt.Errorf("asr-retry-max-attempts must be positive")
+		return cfg, fmt.Errorf("--asr-retry-max-attempts must be positive")
 	}
 	if cfg.Retry.InitialDelay <= 0 {
-		return cfg, fmt.Errorf("asr-retry-initial-delay must be positive")
+		return cfg, fmt.Errorf("--asr-retry-initial-delay must be positive")
 	}
 	if cfg.Retry.Factor <= 0 {
-		return cfg, fmt.Errorf("asr-retry-factor must be positive")
+		return cfg, fmt.Errorf("--asr-retry-factor must be positive")
 	}
 	if cfg.Retry.MaxDelay <= 0 {
-		return cfg, fmt.Errorf("asr-retry-max-delay must be positive")
+		return cfg, fmt.Errorf("--asr-retry-max-delay must be positive")
 	}
 	cfg.DashScopeBaseURL = strings.TrimRight(cfg.DashScopeBaseURL, "/")
 	cfg.MaxUploadBytes = maxUploadMB << 20
 	return cfg, nil
+}
+
+func validateDoubleDashArgs(args []string) error {
+	for _, arg := range args {
+		if arg == "--" {
+			return nil
+		}
+		if strings.HasPrefix(arg, "--") || !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return fmt.Errorf("command-line argument %q must use --name form", arg)
+	}
+	return nil
 }
 
 func envString(name, fallback string) string {
