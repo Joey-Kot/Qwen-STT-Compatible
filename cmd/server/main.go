@@ -31,6 +31,9 @@ func main() {
 		}
 		log.Fatal(err)
 	}
+	if err := httpapi.CleanupTempDirs(); err != nil {
+		log.Printf("cleanup temp dirs: %v", err)
+	}
 
 	client := dashscope.New(dashscope.Config{
 		APIKey:  cfg.DashScopeAPIKey,

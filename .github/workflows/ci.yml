@@ -14,7 +14,7 @@ permissions:
 
 env:
   BINARY_NAME: qwen-stt-compatible
-  GO_VERSION: "1.22"
+  GO_VERSION: "1.26.4"
   REGISTRY: ghcr.io
 
 jobs:

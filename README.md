@@ -174,7 +174,7 @@ ENABLE_ITN="false" \
 | `-dashscope-base-url` | `https://dashscope.aliyuncs.com/api/v1` | `DASHSCOPE_HTTP_BASE_URL` | DashScope HTTP API base URL |
 | `-max-upload-mb` | `500` | `MAX_UPLOAD_MB` | 单个上传音频文件大小上限，单位 MiB |
 | `-upstream-timeout` | `1h` | `UPSTREAM_TIMEOUT_SECONDS` | DashScope 请求超时时间 |
-| `-api-concurrency` | `10` | `API_CONCURRENCY` | ASR 分片并发请求数 |
+| `-api-concurrency` | `10` | `API_CONCURRENCY` | 全局 ASR 上游并发请求数，超出后排队 |
 | `-api-segment-length` | `175s` | `API_SEGMENT_LENGTH` | 单个 ASR 分片最大时长 |
 | `-fixed-slice-length` | `5s` | `FFMPEG_SEGMENT_LENGTH` | 固定分片静音裁剪的切片长度 |
 | `-fixed-slice-workers` | `16` | `FFMPEG_WORKS` | 固定分片静音裁剪并发数 |
@@ -188,6 +188,34 @@ ENABLE_ITN="false" \
 | `-asr-retry-max-delay` | `8s` | `ASR_RETRY_MAX_DELAY` | ASR 重试最大等待时间 |
 
 `OUTPUT_BITRATE` 目前只通过环境变量配置，默认 `128k`。
+
+## 运行日志与临时文件
+
+服务启动后会自动清理系统临时目录下的历史请求目录：
+
+```text
+<系统临时目录>/qwen-stt-compatible/<request_id>
+```
+
+正常请求结束时，也会删除本次请求的临时目录。
+
+每次转写请求会输出请求基础信息，不包含 API token、DashScope API Key 或音频内容：
+
+```text
+request=<request_id> endpoint=/v1/audio/transcriptions file=<filename> model=<model> language=<language> enable_lid=<bool> enable_itn=<bool>
+```
+
+固定切片静音裁剪成功时会输出：
+
+```text
+fixed trim input_duration=<音频文件原始长度> fixed_slice_length=<固定切片长度> slices=<成功切片数量> trimmed_slices=<检测到静音并进行了裁剪的切片数量>
+```
+
+生成 ASR 分片后会输出：
+
+```text
+segments merged_duration=<切片合并后音频长度> asr_segments=<并发 ASR 分片数量>
+```
 
 ## Docker
 

@@ -36,7 +36,10 @@ import (
 	"qwen-stt-compatible/internal/sse"
 )
 
-const multipartMemoryLimit = 32 << 20
+const (
+	multipartMemoryLimit = 32 << 20
+	tempRootName         = "qwen-stt-compatible"
+)
 
 type ASRClient interface {
 	TranscribeFile(ctx context.Context, path, model string, options dashscope.ASROptions, prompt string) (string, error)
@@ -45,6 +48,7 @@ type ASRClient interface {
 type Server struct {
 	cfg    config.Config
 	client ASRClient
+	apiSem chan struct{}
 }
 
 type transcriptionResult struct {
@@ -53,7 +57,36 @@ type transcriptionResult struct {
 }
 
 func New(cfg config.Config, client ASRClient) *Server {
-	return &Server{cfg: cfg, client: client}
+	concurrency := cfg.APIConcurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	return &Server{cfg: cfg, client: client, apiSem: make(chan struct{}, concurrency)}
+}
+
+func CleanupTempDirs() error {
+	return cleanupTempDirs(filepath.Join(os.TempDir(), tempRootName))
+}
+
+func cleanupTempDirs(root string) error {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", path, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +162,7 @@ func (s *Server) processRequest(w http.ResponseWriter, r *http.Request) (transcr
 	stream := boolForm(r.FormValue("stream"), false)
 
 	requestID := dashscope.RequestID()
-	tempDir := filepath.Join(os.TempDir(), "qwen-stt-compatible", requestID)
+	tempDir := filepath.Join(os.TempDir(), tempRootName, requestID)
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
 		return transcriptionResult{}, stream, err
 	}
@@ -148,7 +181,7 @@ func (s *Server) processRequest(w http.ResponseWriter, r *http.Request) (transcr
 		return transcriptionResult{}, stream, err
 	}
 
-	log.Printf("request=%s endpoint=/v1/audio/transcriptions file=%s model=%s language=%s enable_lid=%v enable_itn=%v", requestID, header.Filename, modelName, language, enableLID, enableITN)
+	log.Printf("request=%s endpoint=/v1/audio/transcriptions file=%s model=%s language=%s enable_lid=%v enable_itn=%v", requestID, sanitizeLogValue(header.Filename), modelName, language, enableLID, enableITN)
 	segments, err := s.preprocess(r.Context(), inputPath, tempDir, sampleRate)
 	if err != nil {
 		return transcriptionResult{}, stream, err
@@ -185,7 +218,8 @@ func (s *Server) preprocess(ctx context.Context, inputPath, tempDir string, samp
 		return nil, err
 	}
 	wavPath := filepath.Join(tempDir, "converted.wav")
-	if _, err := processor.PreconvertToWAV(ctx, inputPath, wavPath, sampleRate); err != nil {
+	convertInfo, err := processor.PreconvertToWAV(ctx, inputPath, wavPath, sampleRate)
+	if err != nil {
 		return nil, err
 	}
 	mergedWAV := filepath.Join(tempDir, "converted_sliced_merged.wav")
@@ -194,14 +228,34 @@ func (s *Server) preprocess(ctx context.Context, inputPath, tempDir string, samp
 		log.Printf("fixed trim failed, fallback to converted wav: %v", err)
 		merged = wavPath
 	} else {
-		log.Printf("fixed trim slices total=%d ok=%d skipped=%d", trimInfo.FixedSliceCount, trimInfo.FixedSliceSucceeded, trimInfo.FixedSliceSkipped)
+		log.Printf("fixed trim input_duration=%s fixed_slice_length=%s slices=%d trimmed_slices=%d", convertInfo.InputDuration, s.cfg.FixedSliceLength, trimInfo.FixedSliceSucceeded, countTrimmedSliceFiles(cfg.FixedTrim.TempDir))
 	}
 	segments, splitInfo, err := processor.SplitWAVBySilenceGroups(ctx, merged)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("segments=%d skipped=%d duration=%s", splitInfo.SegmentCount, splitInfo.SegmentSkipped, splitInfo.OutputDuration)
+	log.Printf("segments merged_duration=%s asr_segments=%d", splitInfo.InputDuration, splitInfo.SegmentCount)
 	return segments, nil
+}
+
+func countTrimmedSliceFiles(tempRoot string) int {
+	runDirs, err := filepath.Glob(filepath.Join(tempRoot, "run-*"))
+	if err != nil {
+		return 0
+	}
+	total := 0
+	for _, runDir := range runDirs {
+		entries, err := os.ReadDir(filepath.Join(runDir, "trimmed_slices"))
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				total++
+			}
+		}
+	}
+	return total
 }
 
 func (s *Server) recognizeSegments(ctx context.Context, segments []smartaudio.Segment, model string, options dashscope.ASROptions, prompt string) (string, error) {
@@ -210,11 +264,6 @@ func (s *Server) recognizeSegments(ctx context.Context, segments []smartaudio.Se
 		text  string
 		err   error
 	}
-	concurrency := s.cfg.APIConcurrency
-	if concurrency <= 0 {
-		concurrency = 1
-	}
-	sem := make(chan struct{}, concurrency)
 	results := make([]result, len(segments))
 	var wg sync.WaitGroup
 	for i, segment := range segments {
@@ -223,13 +272,12 @@ func (s *Server) recognizeSegments(ctx context.Context, segments []smartaudio.Se
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			select {
-			case <-ctx.Done():
-				results[i] = result{index: segment.Index, err: ctx.Err()}
+			release, err := s.acquireAPISlot(ctx)
+			if err != nil {
+				results[i] = result{index: segment.Index, err: err}
 				return
-			case sem <- struct{}{}:
 			}
-			defer func() { <-sem }()
+			defer release()
 			text, err := s.client.TranscribeFile(ctx, segment.File, model, options, prompt)
 			results[i] = result{index: segment.Index, text: text, err: err}
 		}()
@@ -244,6 +292,15 @@ func (s *Server) recognizeSegments(ctx context.Context, segments []smartaudio.Se
 		builder.WriteString(res.text)
 	}
 	return builder.String(), nil
+}
+
+func (s *Server) acquireAPISlot(ctx context.Context) (func(), error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case s.apiSem <- struct{}{}:
+		return func() { <-s.apiSem }, nil
+	}
 }
 
 func (s *Server) writePseudoStream(w http.ResponseWriter, r *http.Request, result transcriptionResult) {
@@ -348,6 +405,27 @@ func safeFilename(name string) string {
 		return "unknown_file"
 	}
 	return clean
+}
+
+func sanitizeLogValue(value string) string {
+	var builder strings.Builder
+	for _, r := range value {
+		switch r {
+		case '\n':
+			builder.WriteString(`\n`)
+		case '\r':
+			builder.WriteString(`\r`)
+		case '\t':
+			builder.WriteString(`\t`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&builder, `\x%02x`, r)
+				continue
+			}
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
 }
 
 func normalizeLanguageCode(lang string) string {
