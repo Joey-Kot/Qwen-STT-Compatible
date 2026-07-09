@@ -66,7 +66,7 @@ func Parse(args []string) (Config, error) {
 		OutputBitrate:     envString("OUTPUT_BITRATE", "128k"),
 		EnableLID:         envBool("ENABLE_LID", true),
 		EnableITN:         envBool("ENABLE_ITN", false),
-		UpstreamTimeout:   time.Duration(envPositiveInt("UPSTREAM_TIMEOUT_SECONDS", 3600)) * time.Second,
+		UpstreamTimeout:   time.Duration(envPositiveInt("UPSTREAM_TIMEOUT_SECONDS", 30)) * time.Second,
 		Retry: RetryConfig{
 			MaxAttempts:  envPositiveInt("ASR_RETRY_MAX_ATTEMPTS", 4),
 			InitialDelay: time.Duration(envPositiveFloat("ASR_RETRY_INITIAL_DELAY", 0.5) * float64(time.Second)),

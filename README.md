@@ -76,7 +76,7 @@ DASHSCOPE_HTTP_BASE_URL="https://dashscope.aliyuncs.com/api/v1"
 
 LISTEN=":8080"
 MAX_UPLOAD_MB="500"
-UPSTREAM_TIMEOUT_SECONDS="3600"
+UPSTREAM_TIMEOUT_SECONDS="30"
 
 API_CONCURRENCY="10"
 API_SEGMENT_LENGTH="175"
@@ -122,7 +122,7 @@ go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-
   --listen ":8080" \
   --dashscope-base-url "https://dashscope.aliyuncs.com/api/v1" \
   --max-upload-mb 500 \
-  --upstream-timeout 1h \
+  --upstream-timeout 30s \
   --api-concurrency 10 \
   --api-segment-length 175s \
   --fixed-slice-length 5s \
@@ -150,7 +150,7 @@ ENABLE_ITN="false" \
   --listen ":8080" \
   --dashscope-base-url "https://dashscope.aliyuncs.com/api/v1" \
   --max-upload-mb 500 \
-  --upstream-timeout 1h \
+  --upstream-timeout 30s \
   --api-concurrency 10 \
   --api-segment-length 175s \
   --fixed-slice-length 5s \
@@ -175,7 +175,7 @@ ENABLE_ITN="false" \
 | `--dashscope-api-key` | 空 | `DASHSCOPE_API_KEY` | DashScope API Key |
 | `--dashscope-base-url` | `https://dashscope.aliyuncs.com/api/v1` | `DASHSCOPE_HTTP_BASE_URL` | DashScope HTTP API base URL |
 | `--max-upload-mb` | `500` | `MAX_UPLOAD_MB` | 单个上传音频文件大小上限，单位 MiB |
-| `--upstream-timeout` | `1h` | `UPSTREAM_TIMEOUT_SECONDS` | DashScope 请求超时时间 |
+| `--upstream-timeout` | `30s` | `UPSTREAM_TIMEOUT_SECONDS` | DashScope 请求超时时间 |
 | `--api-concurrency` | `10` | `API_CONCURRENCY` | 全局 ASR 上游并发请求数，超出后排队 |
 | `--api-segment-length` | `175s` | `API_SEGMENT_LENGTH` | 单个 ASR 分片最大时长 |
 | `--fixed-slice-length` | `5s` | `FFMPEG_SEGMENT_LENGTH` | 固定分片静音裁剪的切片长度 |
@@ -231,7 +231,7 @@ docker run -d \
   -e DASHSCOPE_HTTP_BASE_URL="https://dashscope.aliyuncs.com/api/v1" \
   -e LISTEN=":8080" \
   -e MAX_UPLOAD_MB="500" \
-  -e UPSTREAM_TIMEOUT_SECONDS="3600" \
+  -e UPSTREAM_TIMEOUT_SECONDS="30" \
   -e API_CONCURRENCY="10" \
   -e API_SEGMENT_LENGTH="175" \
   -e FFMPEG_WORKS="16" \
