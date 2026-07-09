@@ -204,6 +204,7 @@ func (s *Server) preprocess(ctx context.Context, inputPath, tempDir string, samp
 	cfg.FixedTrim.SliceLength = s.cfg.FixedSliceLength
 	cfg.FixedTrim.Workers = s.cfg.FixedSliceWorkers
 	cfg.FixedTrim.TempDir = filepath.Join(tempDir, "fixed_slice_temp")
+	cfg.Segments.Workers = s.cfg.SegmentWorkers
 	cfg.Segments.MaxLength = s.cfg.APISegmentLength
 	cfg.Segments.OutputFormat = "ogg"
 	cfg.Segments.OutputCodec = "libopus"
@@ -213,6 +214,7 @@ func (s *Server) preprocess(ctx context.Context, inputPath, tempDir string, samp
 	cfg.Segments.OutDir = filepath.Join(tempDir, "out_segments")
 	cfg.Segments.KeepTempWAV = smartaudio.Bool(true)
 	cfg.Segments.PreserveInternalSilence = smartaudio.Bool(true)
+	cfg.Libav.CodecThreads = s.cfg.LibavCodecThreads
 	processor, err := smartaudio.NewProcessor(smartaudio.WithConfig(cfg))
 	if err != nil {
 		return nil, err

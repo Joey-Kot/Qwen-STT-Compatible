@@ -6,7 +6,7 @@ Qwen STT Compatible 是一个 Go 实现的 OpenAI 风格语音转写服务。HTT
 
 - 兼容 `POST /v1/audio/transcriptions`
 - 支持 Bearer Token 鉴权，`API_TOKEN` 可用逗号配置多个 token
-- 预处理链路：转 WAV、固定分片并发静音裁剪、合并、按静音区间生成 ASR 分片
+- 预处理链路：转 WAV、固定分片并发静音裁剪、合并、按静音区间并发导出和编码 ASR 分片
 - 复刻 DashScope Python SDK 的请求流程：获取 OSS 上传策略、上传音频分片，再按模型前缀调用对应 REST endpoint
 - 支持 Qwen3-ASR-Flash、Fun-ASR-Flash、Fun-ASR、Paraformer 系列非实时模型，模型名原样透传给 DashScope
 - 支持非流式 JSON 返回，也支持 `stream=true` 的伪 SSE 流式返回
@@ -82,6 +82,8 @@ API_CONCURRENCY="10"
 API_SEGMENT_LENGTH="175"
 FFMPEG_WORKS="16"
 FFMPEG_SEGMENT_LENGTH="5"
+SEGMENT_WORKERS="0"
+LIBAV_CODEC_THREADS="0"
 SILENT_INTERVAL="700"
 PADDING_LENGTH="100"
 OUTPUT_BITRATE="128k"
@@ -97,6 +99,7 @@ ASR_RETRY_MAX_DELAY="8.0"
 如果使用百炼业务空间域名，将 `DASHSCOPE_HTTP_BASE_URL` 设置为 `https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/api/v1`。
 `MAX_UPLOAD_MB` 控制单个上传音频文件大小上限，默认 `500`，也可用启动参数 `--max-upload-mb` 覆盖。
 ASR 分片会显式输出为 `ogg` 容器、`libopus` 编码、`16000Hz`、`s16` 采样格式；`OUTPUT_BITRATE` / `--output-bitrate` 控制 Opus 码率，默认 `128k`。
+`SEGMENT_WORKERS` / `--segment-workers` 控制 ASR 分片导出和编码并发数，`0` 表示由预处理库按 CPU 自动选择；`LIBAV_CODEC_THREADS` / `--libav-codec-threads` 控制每条 libav pipeline 的 decoder/encoder 线程数，`0` 表示使用 libav 默认策略。显式调大时需要同时考虑 `FFMPEG_WORKS`，避免 Go worker 和 libav codec 线程叠加后过量并发。
 `ENABLE_LID` 和 `ENABLE_ITN` 分别控制请求未显式传入 `enable_lid`、`enable_itn` 时的默认值；请求字段一旦传入，会覆盖服务配置默认值。
 生产部署建议用环境变量传入 `API_TOKEN` 和 `DASHSCOPE_API_KEY`，避免密钥出现在进程命令行里；本地测试也可以使用 `--api-token` 和 `--dashscope-api-key`。
 
@@ -127,6 +130,8 @@ go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-
   --api-segment-length 175s \
   --fixed-slice-length 5s \
   --fixed-slice-workers 16 \
+  --segment-workers 0 \
+  --libav-codec-threads 0 \
   --silent-interval 700ms \
   --padding 100ms \
   --output-bitrate "128k" \
@@ -155,6 +160,8 @@ ENABLE_ITN="false" \
   --api-segment-length 175s \
   --fixed-slice-length 5s \
   --fixed-slice-workers 16 \
+  --segment-workers 0 \
+  --libav-codec-threads 0 \
   --silent-interval 700ms \
   --padding 100ms \
   --output-bitrate "128k" \
@@ -180,6 +187,8 @@ ENABLE_ITN="false" \
 | `--api-segment-length` | `175s` | `API_SEGMENT_LENGTH` | 单个 ASR 分片最大时长 |
 | `--fixed-slice-length` | `5s` | `FFMPEG_SEGMENT_LENGTH` | 固定分片静音裁剪的切片长度 |
 | `--fixed-slice-workers` | `16` | `FFMPEG_WORKS` | 固定分片静音裁剪并发数 |
+| `--segment-workers` | `0` | `SEGMENT_WORKERS` | ASR 分片导出和编码并发数，`0` 表示按 CPU 自动选择 |
+| `--libav-codec-threads` | `0` | `LIBAV_CODEC_THREADS` | 单个 libav pipeline 的 decoder/encoder 线程数，`0` 表示 libav 默认策略 |
 | `--silent-interval` | `700ms` | `SILENT_INTERVAL` | 最短静音判定时长 |
 | `--padding` | `100ms` | `PADDING_LENGTH` | 非静音片段前后保留时长 |
 | `--output-bitrate` | `128k` | `OUTPUT_BITRATE` | ASR 分片输出音频码率 |
@@ -236,6 +245,8 @@ docker run -d \
   -e API_SEGMENT_LENGTH="175" \
   -e FFMPEG_WORKS="16" \
   -e FFMPEG_SEGMENT_LENGTH="5" \
+  -e SEGMENT_WORKERS="0" \
+  -e LIBAV_CODEC_THREADS="0" \
   -e SILENT_INTERVAL="700" \
   -e PADDING_LENGTH="100" \
   -e OUTPUT_BITRATE="128k" \

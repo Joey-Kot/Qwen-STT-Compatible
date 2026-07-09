@@ -38,6 +38,8 @@ type Config struct {
 	APISegmentLength  time.Duration
 	FixedSliceLength  time.Duration
 	FixedSliceWorkers int
+	SegmentWorkers    int
+	LibavCodecThreads int
 	SilentInterval    time.Duration
 	Padding           time.Duration
 	OutputBitrate     string
@@ -61,6 +63,8 @@ func Parse(args []string) (Config, error) {
 		APISegmentLength:  time.Duration(envPositiveInt("API_SEGMENT_LENGTH", 175)) * time.Second,
 		FixedSliceLength:  time.Duration(envPositiveInt("FFMPEG_SEGMENT_LENGTH", 5)) * time.Second,
 		FixedSliceWorkers: envPositiveInt("FFMPEG_WORKS", 16),
+		SegmentWorkers:    envNonNegativeInt("SEGMENT_WORKERS", 0),
+		LibavCodecThreads: envNonNegativeInt("LIBAV_CODEC_THREADS", 0),
 		SilentInterval:    time.Duration(envPositiveInt("SILENT_INTERVAL", 700)) * time.Millisecond,
 		Padding:           time.Duration(envPositiveInt("PADDING_LENGTH", 100)) * time.Millisecond,
 		OutputBitrate:     envString("OUTPUT_BITRATE", "128k"),
@@ -94,6 +98,8 @@ func Parse(args []string) (Config, error) {
 	fs.DurationVar(&cfg.APISegmentLength, "api-segment-length", cfg.APISegmentLength, "maximum ASR segment length")
 	fs.DurationVar(&cfg.FixedSliceLength, "fixed-slice-length", cfg.FixedSliceLength, "fixed trim slice length")
 	fs.IntVar(&cfg.FixedSliceWorkers, "fixed-slice-workers", cfg.FixedSliceWorkers, "fixed trim workers")
+	fs.IntVar(&cfg.SegmentWorkers, "segment-workers", cfg.SegmentWorkers, "ASR segment export and encode workers, 0 means auto")
+	fs.IntVar(&cfg.LibavCodecThreads, "libav-codec-threads", cfg.LibavCodecThreads, "libav decoder/encoder threads per pipeline, 0 means libav default")
 	fs.DurationVar(&cfg.SilentInterval, "silent-interval", cfg.SilentInterval, "minimum silence interval")
 	fs.DurationVar(&cfg.Padding, "padding", cfg.Padding, "speech interval padding")
 	fs.StringVar(&cfg.OutputBitrate, "output-bitrate", cfg.OutputBitrate, "audio output bitrate")
@@ -127,6 +133,12 @@ func Parse(args []string) (Config, error) {
 	if cfg.Retry.MaxDelay <= 0 {
 		return cfg, fmt.Errorf("--asr-retry-max-delay must be positive")
 	}
+	if cfg.SegmentWorkers < 0 {
+		return cfg, fmt.Errorf("--segment-workers must be non-negative")
+	}
+	if cfg.LibavCodecThreads < 0 {
+		return cfg, fmt.Errorf("--libav-codec-threads must be non-negative")
+	}
 	cfg.DashScopeBaseURL = strings.TrimRight(cfg.DashScopeBaseURL, "/")
 	cfg.MaxUploadBytes = maxUploadMB << 20
 	return cfg, nil
@@ -159,6 +171,18 @@ func envPositiveInt(name string, fallback int) int {
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func envNonNegativeInt(name string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
 		return fallback
 	}
 	return parsed

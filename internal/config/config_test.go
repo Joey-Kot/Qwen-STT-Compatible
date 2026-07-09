@@ -64,6 +64,34 @@ func TestParseOutputBitrateFlagOverridesEnv(t *testing.T) {
 	}
 }
 
+func TestParsePreprocessConcurrencyFlagsOverrideEnv(t *testing.T) {
+	t.Setenv("SEGMENT_WORKERS", "0")
+	t.Setenv("LIBAV_CODEC_THREADS", "0")
+	cfg, err := Parse([]string{"--segment-workers", "6", "--libav-codec-threads", "2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := cfg.SegmentWorkers, 6; got != want {
+		t.Fatalf("SegmentWorkers=%d want %d", got, want)
+	}
+	if got, want := cfg.LibavCodecThreads, 2; got != want {
+		t.Fatalf("LibavCodecThreads=%d want %d", got, want)
+	}
+}
+
+func TestParsePreprocessConcurrencyAllowsZeroAuto(t *testing.T) {
+	cfg, err := Parse([]string{"--segment-workers", "0", "--libav-codec-threads", "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SegmentWorkers != 0 {
+		t.Fatalf("SegmentWorkers=%d want 0", cfg.SegmentWorkers)
+	}
+	if cfg.LibavCodecThreads != 0 {
+		t.Fatalf("LibavCodecThreads=%d want 0", cfg.LibavCodecThreads)
+	}
+}
+
 func TestParseEnableDefaultsFromEnvAndFlags(t *testing.T) {
 	t.Setenv("ENABLE_LID", "false")
 	t.Setenv("ENABLE_ITN", "true")
@@ -123,5 +151,14 @@ func TestParseRetryFlagsOverrideEnv(t *testing.T) {
 func TestParseRejectsSingleDashFlag(t *testing.T) {
 	if _, err := Parse([]string{"-listen", ":9090"}); err == nil {
 		t.Fatal("Parse accepted single-dash flag")
+	}
+}
+
+func TestParseRejectsNegativePreprocessConcurrency(t *testing.T) {
+	if _, err := Parse([]string{"--segment-workers", "-1"}); err == nil {
+		t.Fatal("Parse accepted negative segment workers")
+	}
+	if _, err := Parse([]string{"--libav-codec-threads", "-1"}); err == nil {
+		t.Fatal("Parse accepted negative libav codec threads")
 	}
 }
