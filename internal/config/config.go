@@ -14,6 +14,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -34,6 +35,8 @@ type Config struct {
 	APITokens         []string
 	DashScopeAPIKey   string
 	DashScopeBaseURL  string
+	WebDAVURL         string
+	WebDAVCredentials string
 	APIConcurrency    int
 	APISegmentLength  time.Duration
 	FixedSliceLength  time.Duration
@@ -59,6 +62,8 @@ func Parse(args []string) (Config, error) {
 		APITokens:         splitTokens(os.Getenv("API_TOKEN")),
 		DashScopeAPIKey:   strings.TrimSpace(os.Getenv("DASHSCOPE_API_KEY")),
 		DashScopeBaseURL:  strings.TrimRight(envString("DASHSCOPE_HTTP_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"), "/"),
+		WebDAVURL:         strings.TrimRight(strings.TrimSpace(os.Getenv("WEBDAV_URL")), "/"),
+		WebDAVCredentials: strings.TrimSpace(os.Getenv("WEBDAV_CREDENTIALS")),
 		APIConcurrency:    envPositiveInt("API_CONCURRENCY", 10),
 		APISegmentLength:  time.Duration(envPositiveInt("API_SEGMENT_LENGTH", 175)) * time.Second,
 		FixedSliceLength:  time.Duration(envPositiveInt("FFMPEG_SEGMENT_LENGTH", 5)) * time.Second,
@@ -94,6 +99,8 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&apiToken, "api-token", apiToken, "comma-separated compatible API tokens")
 	fs.StringVar(&cfg.DashScopeAPIKey, "dashscope-api-key", cfg.DashScopeAPIKey, "DashScope API key")
 	fs.StringVar(&cfg.DashScopeBaseURL, "dashscope-base-url", cfg.DashScopeBaseURL, "DashScope HTTP API base URL")
+	fs.StringVar(&cfg.WebDAVURL, "webdav-url", cfg.WebDAVURL, "public HTTPS WebDAV base URL")
+	fs.StringVar(&cfg.WebDAVCredentials, "webdav-credentials", cfg.WebDAVCredentials, "WebDAV credentials in user@password form")
 	fs.IntVar(&cfg.APIConcurrency, "api-concurrency", cfg.APIConcurrency, "DashScope request concurrency")
 	fs.DurationVar(&cfg.APISegmentLength, "api-segment-length", cfg.APISegmentLength, "maximum ASR segment length")
 	fs.DurationVar(&cfg.FixedSliceLength, "fixed-slice-length", cfg.FixedSliceLength, "fixed trim slice length")
@@ -140,8 +147,27 @@ func Parse(args []string) (Config, error) {
 		return cfg, fmt.Errorf("--libav-codec-threads must be non-negative")
 	}
 	cfg.DashScopeBaseURL = strings.TrimRight(cfg.DashScopeBaseURL, "/")
+	cfg.WebDAVURL = strings.TrimRight(strings.TrimSpace(cfg.WebDAVURL), "/")
+	cfg.WebDAVCredentials = strings.TrimSpace(cfg.WebDAVCredentials)
+	if cfg.WebDAVURL != "" && cfg.WebDAVCredentials != "" {
+		if err := validateWebDAVConfig(cfg.WebDAVURL, cfg.WebDAVCredentials); err != nil {
+			return cfg, err
+		}
+	}
 	cfg.MaxUploadBytes = maxUploadMB << 20
 	return cfg, nil
+}
+
+func validateWebDAVConfig(rawURL, credentials string) error {
+	u, err := url.ParseRequestURI(rawURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("--webdav-url must be a public HTTPS URL")
+	}
+	username, password, ok := strings.Cut(credentials, "@")
+	if !ok || username == "" || password == "" {
+		return fmt.Errorf("--webdav-credentials must use user@password form")
+	}
+	return nil
 }
 
 func validateDoubleDashArgs(args []string) error {

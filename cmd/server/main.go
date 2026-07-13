@@ -36,10 +36,12 @@ func main() {
 	}
 
 	client := dashscope.New(dashscope.Config{
-		APIKey:  cfg.DashScopeAPIKey,
-		BaseURL: cfg.DashScopeBaseURL,
-		Timeout: cfg.UpstreamTimeout,
-		Retry:   cfg.Retry,
+		APIKey:            cfg.DashScopeAPIKey,
+		BaseURL:           cfg.DashScopeBaseURL,
+		WebDAVURL:         cfg.WebDAVURL,
+		WebDAVCredentials: cfg.WebDAVCredentials,
+		Timeout:           cfg.UpstreamTimeout,
+		Retry:             cfg.Retry,
 	})
 
 	handler := httpapi.New(cfg, client)

@@ -53,6 +53,36 @@ func TestParseTokenFlagsOverrideEnv(t *testing.T) {
 	}
 }
 
+func TestParseWebDAVFlagsOverrideEnv(t *testing.T) {
+	t.Setenv("WEBDAV_URL", "https://env.example.com/dav/")
+	t.Setenv("WEBDAV_CREDENTIALS", "env-user@env-password")
+	cfg, err := Parse([]string{
+		"--webdav-url", "https://files.example.com/asr/",
+		"--webdav-credentials", "flag-user@flag-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := cfg.WebDAVURL, "https://files.example.com/asr"; got != want {
+		t.Fatalf("WebDAVURL=%q want %q", got, want)
+	}
+	if got, want := cfg.WebDAVCredentials, "flag-user@flag-password"; got != want {
+		t.Fatalf("WebDAVCredentials=%q want %q", got, want)
+	}
+}
+
+func TestParseRejectsInvalidActiveWebDAVConfig(t *testing.T) {
+	tests := [][]string{
+		{"--webdav-url", "http://files.example.com/dav", "--webdav-credentials", "user@password"},
+		{"--webdav-url", "https://files.example.com/dav", "--webdav-credentials", "not-a-pair"},
+	}
+	for _, args := range tests {
+		if _, err := Parse(args); err == nil {
+			t.Fatalf("Parse(%v) accepted invalid WebDAV configuration", args)
+		}
+	}
+}
+
 func TestParseOutputBitrateFlagOverridesEnv(t *testing.T) {
 	t.Setenv("OUTPUT_BITRATE", "96k")
 	cfg, err := Parse([]string{"--output-bitrate", "64k"})

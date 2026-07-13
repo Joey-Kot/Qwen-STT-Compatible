@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -39,18 +40,32 @@ const (
 )
 
 type Config struct {
-	APIKey     string
-	BaseURL    string
-	Timeout    time.Duration
-	Retry      config.RetryConfig
-	HTTPClient *http.Client
+	APIKey            string
+	BaseURL           string
+	WebDAVURL         string
+	WebDAVCredentials string
+	Timeout           time.Duration
+	Retry             config.RetryConfig
+	HTTPClient        *http.Client
 }
 
 type Client struct {
 	apiKey string
 	base   string
+	webdav *webDAVConfig
 	http   *http.Client
 	retry  config.RetryConfig
+}
+
+type webDAVConfig struct {
+	baseURL  *url.URL
+	username string
+	password string
+}
+
+type uploadedFile struct {
+	resourceURL string
+	webDAVURL   string
 }
 
 type ASROptions struct {
@@ -65,12 +80,19 @@ func New(cfg Config) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: cfg.Timeout}
 	}
-	return &Client{
+	client := &Client{
 		apiKey: strings.TrimSpace(cfg.APIKey),
 		base:   strings.TrimRight(cfg.BaseURL, "/"),
 		http:   httpClient,
 		retry:  cfg.Retry,
 	}
+	if baseURL, err := url.Parse(strings.TrimSpace(cfg.WebDAVURL)); err == nil && baseURL != nil {
+		username, password, ok := strings.Cut(strings.TrimSpace(cfg.WebDAVCredentials), "@")
+		if ok && username != "" && password != "" {
+			client.webdav = &webDAVConfig{baseURL: baseURL, username: username, password: password}
+		}
+	}
+	return client
 }
 
 func (c *Client) TranscribeFile(ctx context.Context, path, model string, options ASROptions, prompt string) (string, error) {
@@ -124,10 +146,11 @@ func (c *Client) transcribeOnce(ctx context.Context, path, model string, options
 }
 
 func (c *Client) transcribeQwen3Flash(ctx context.Context, path, model string, options ASROptions, prompt string) (string, error) {
-	ossURL, err := c.upload(ctx, model, path)
+	uploaded, err := c.upload(ctx, model, path)
 	if err != nil {
 		return "", err
 	}
+	defer c.cleanupUploadedFile(uploaded)
 	body := map[string]any{
 		"model": model,
 		"input": map[string]any{
@@ -138,7 +161,7 @@ func (c *Client) transcribeQwen3Flash(ctx context.Context, path, model string, o
 				},
 				map[string]any{
 					"role":    "user",
-					"content": []any{map[string]any{"audio": ossURL}},
+					"content": []any{map[string]any{"audio": uploaded.resourceURL}},
 				},
 			},
 		},
@@ -165,10 +188,11 @@ func (c *Client) transcribeQwen3Flash(ctx context.Context, path, model string, o
 }
 
 func (c *Client) transcribeFunASRFlash(ctx context.Context, path, model string, options ASROptions) (string, error) {
-	ossURL, err := c.upload(ctx, model, path)
+	uploaded, err := c.upload(ctx, model, path)
 	if err != nil {
 		return "", err
 	}
+	defer c.cleanupUploadedFile(uploaded)
 	sampleRate := options.SampleRate
 	if sampleRate <= 0 {
 		sampleRate = 16000
@@ -183,7 +207,7 @@ func (c *Client) transcribeFunASRFlash(ctx context.Context, path, model string, 
 						map[string]any{
 							"type": "input_audio",
 							"input_audio": map[string]any{
-								"data": ossURL,
+								"data": uploaded.resourceURL,
 							},
 						},
 					},
@@ -213,10 +237,11 @@ func (c *Client) transcribeFunASRFlash(ctx context.Context, path, model string, 
 }
 
 func (c *Client) transcribeAsyncTask(ctx context.Context, path, model string, options ASROptions) (string, error) {
-	ossURL, err := c.upload(ctx, model, path)
+	uploaded, err := c.upload(ctx, model, path)
 	if err != nil {
 		return "", err
 	}
+	defer c.cleanupUploadedFile(uploaded)
 	parameters := map[string]any{}
 	if options.Language != "" {
 		parameters["language_hints"] = []string{options.Language}
@@ -224,7 +249,7 @@ func (c *Client) transcribeAsyncTask(ctx context.Context, path, model string, op
 	body := map[string]any{
 		"model": model,
 		"input": map[string]any{
-			"file_urls": []string{ossURL},
+			"file_urls": []string{uploaded.resourceURL},
 		},
 		"parameters": parameters,
 	}
@@ -368,10 +393,13 @@ type uploadPolicy struct {
 	UploadHost          string `json:"upload_host"`
 }
 
-func (c *Client) upload(ctx context.Context, model, path string) (string, error) {
+func (c *Client) upload(ctx context.Context, model, path string) (uploadedFile, error) {
+	if c.webdav != nil {
+		return c.uploadWebDAV(ctx, path)
+	}
 	policy, err := c.getUploadPolicy(ctx, model)
 	if err != nil {
-		return "", err
+		return uploadedFile{}, err
 	}
 	key := strings.TrimRight(policy.UploadDir, "/") + "/" + filepath.Base(path)
 	body := &bytes.Buffer{}
@@ -388,27 +416,27 @@ func (c *Client) upload(ctx context.Context, model, path string) (string, error)
 	}
 	for name, value := range fields {
 		if err := writer.WriteField(name, value); err != nil {
-			return "", err
+			return uploadedFile{}, err
 		}
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return uploadedFile{}, err
 	}
 	defer file.Close()
 	part, err := writer.CreateFormFile("file", filepath.Base(path))
 	if err != nil {
-		return "", err
+		return uploadedFile{}, err
 	}
 	if _, err := io.Copy(part, file); err != nil {
-		return "", err
+		return uploadedFile{}, err
 	}
 	if err := writer.Close(); err != nil {
-		return "", err
+		return uploadedFile{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, policy.UploadHost, body)
 	if err != nil {
-		return "", err
+		return uploadedFile{}, err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Accept", "application/json")
@@ -416,14 +444,68 @@ func (c *Client) upload(ctx context.Context, model, path string) (string, error)
 	req.Header.Set("User-Agent", "qwen-stt-compatible")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", err
+		return uploadedFile{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("上传 OSS 失败: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return uploadedFile{}, fmt.Errorf("上传 OSS 失败: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
-	return "oss://" + key, nil
+	return uploadedFile{resourceURL: "oss://" + key}, nil
+}
+
+func (c *Client) uploadWebDAV(ctx context.Context, path string) (uploadedFile, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return uploadedFile{}, err
+	}
+	defer file.Close()
+
+	filename := RequestID() + "-" + filepath.Base(path)
+	resourceURL := c.webdav.baseURL.JoinPath(filename).String()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, resourceURL, file)
+	if err != nil {
+		return uploadedFile{}, err
+	}
+	req.SetBasicAuth(c.webdav.username, c.webdav.password)
+	req.Header.Set("Content-Type", contentType(path))
+	req.Header.Set("User-Agent", "qwen-stt-compatible")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return uploadedFile{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return uploadedFile{}, fmt.Errorf("上传 WebDAV 失败: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	return uploadedFile{resourceURL: resourceURL, webDAVURL: resourceURL}, nil
+}
+
+func (c *Client) cleanupUploadedFile(uploaded uploadedFile) {
+	if uploaded.webDAVURL == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, uploaded.webDAVURL, nil)
+	if err != nil {
+		log.Printf("delete WebDAV temporary audio: %v", err)
+		return
+	}
+	req.SetBasicAuth(c.webdav.username, c.webdav.password)
+	req.Header.Set("User-Agent", "qwen-stt-compatible")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		log.Printf("delete WebDAV temporary audio: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) && resp.StatusCode != http.StatusNotFound {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		log.Printf("delete WebDAV temporary audio: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
 }
 
 func (c *Client) getUploadPolicy(ctx context.Context, model string) (uploadPolicy, error) {

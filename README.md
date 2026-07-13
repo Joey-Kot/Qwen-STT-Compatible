@@ -7,7 +7,7 @@ Qwen STT Compatible 是一个 Go 实现的 OpenAI 风格语音转写服务。HTT
 - 兼容 `POST /v1/audio/transcriptions`
 - 支持 Bearer Token 鉴权，`API_TOKEN` 可用逗号配置多个 token
 - 预处理链路：转 WAV、固定分片并发静音裁剪、合并、按静音区间并发导出和编码 ASR 分片
-- 复刻 DashScope Python SDK 的请求流程：获取 OSS 上传策略、上传音频分片，再按模型前缀调用对应 REST endpoint
+- 默认复刻 DashScope Python SDK 的临时 OSS 流程；也可配置自建 WebDAV 上传音频分片
 - 支持 Qwen3-ASR-Flash、Fun-ASR-Flash、Fun-ASR、Paraformer 系列非实时模型，模型名原样透传给 DashScope
 - 支持非流式 JSON 返回，也支持 `stream=true` 的伪 SSE 流式返回
 - 产物是单个可运行二进制文件
@@ -73,6 +73,8 @@ data: [DONE]
 API_TOKEN="sk-aaa,sk-bbb"
 DASHSCOPE_API_KEY="sk-xxx"
 DASHSCOPE_HTTP_BASE_URL="https://dashscope.aliyuncs.com/api/v1"
+WEBDAV_URL=""
+WEBDAV_CREDENTIALS=""
 
 LISTEN=":8080"
 MAX_UPLOAD_MB="500"
@@ -98,6 +100,10 @@ ASR_RETRY_MAX_DELAY="8.0"
 
 如果使用百炼业务空间域名，将 `DASHSCOPE_HTTP_BASE_URL` 设置为 `https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/api/v1`。
 `MAX_UPLOAD_MB` 控制单个上传音频文件大小上限，默认 `500`，也可用启动参数 `--max-upload-mb` 覆盖。
+`WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 必须同时设置才会启用自定义 WebDAV；此时服务不再使用 DashScope SDK 的内置临时 OSS。`WEBDAV_CREDENTIALS` 格式为 `user@password`，密码可以包含额外的 `@`。
+
+WebDAV 地址必须是公网可访问的 HTTPS 基础地址。服务会使用账号密码对每个分片执行上传和删除操作，账号需要具备上传、下载、删除权限；传给阿里云百炼的是不带认证信息的文件 URL，因此该 URL 在无鉴权状态下必须仅能读取文件。分片转写结束后服务会删除对应的 WebDAV 临时文件。
+
 ASR 分片会显式输出为 `ogg` 容器、`libopus` 编码、`16000Hz`、`s16` 采样格式；`OUTPUT_BITRATE` / `--output-bitrate` 控制 Opus 码率，默认 `128k`。
 `SEGMENT_WORKERS` / `--segment-workers` 控制 ASR 分片导出和编码并发数，`0` 表示由预处理库按 CPU 自动选择；`LIBAV_CODEC_THREADS` / `--libav-codec-threads` 控制每条 libav pipeline 的 decoder/encoder 线程数，`0` 表示使用 libav 默认策略。显式调大时需要同时考虑 `FFMPEG_WORKS`，避免 Go worker 和 libav codec 线程叠加后过量并发。
 `ENABLE_LID` 和 `ENABLE_ITN` 分别控制请求未显式传入 `enable_lid`、`enable_itn` 时的默认值；请求字段一旦传入，会覆盖服务配置默认值。
@@ -124,6 +130,8 @@ go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-
   --dashscope-api-key "sk-xxx" \
   --listen ":8080" \
   --dashscope-base-url "https://dashscope.aliyuncs.com/api/v1" \
+  --webdav-url "https://files.example.com/dav/asr" \
+  --webdav-credentials "user@password" \
   --max-upload-mb 500 \
   --upstream-timeout 30s \
   --api-concurrency 10 \
@@ -181,6 +189,8 @@ ENABLE_ITN="false" \
 | `--api-token` | 空 | `API_TOKEN` | 兼容接口鉴权 token，多个 token 用逗号分隔 |
 | `--dashscope-api-key` | 空 | `DASHSCOPE_API_KEY` | DashScope API Key |
 | `--dashscope-base-url` | `https://dashscope.aliyuncs.com/api/v1` | `DASHSCOPE_HTTP_BASE_URL` | DashScope HTTP API base URL |
+| `--webdav-url` | 空 | `WEBDAV_URL` | 公网 HTTPS WebDAV 基础地址；与用户名密码同时设置时启用 |
+| `--webdav-credentials` | 空 | `WEBDAV_CREDENTIALS` | WebDAV 用户名密码，格式 `user@password`；建议仅通过环境变量传入 |
 | `--max-upload-mb` | `500` | `MAX_UPLOAD_MB` | 单个上传音频文件大小上限，单位 MiB |
 | `--upstream-timeout` | `30s` | `UPSTREAM_TIMEOUT_SECONDS` | DashScope 请求超时时间 |
 | `--api-concurrency` | `10` | `API_CONCURRENCY` | 全局 ASR 上游并发请求数，超出后排队 |
@@ -238,6 +248,8 @@ docker run -d \
   -e API_TOKEN="sk-aaa,sk-bbb" \
   -e DASHSCOPE_API_KEY="sk-xxx" \
   -e DASHSCOPE_HTTP_BASE_URL="https://dashscope.aliyuncs.com/api/v1" \
+  -e WEBDAV_URL="https://files.example.com/dav/asr" \
+  -e WEBDAV_CREDENTIALS="user@password" \
   -e LISTEN=":8080" \
   -e MAX_UPLOAD_MB="500" \
   -e UPSTREAM_TIMEOUT_SECONDS="30" \
@@ -261,11 +273,13 @@ docker run -d \
 
 ## DashScope 请求说明
 
-所有本地音频分片都会先按 DashScope SDK 的临时 OSS 流程上传：
+默认情况下，本地音频分片会按 DashScope SDK 的临时 OSS 流程上传：
 
 - 上传策略：`GET https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model=<model>`
 - OSS 上传：按策略字段 multipart 上传音频文件，返回 `oss://...`
 - 后续 DashScope 请求带 `X-DashScope-OssResourceResolve: enable`
+
+当 `WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 同时设置时，服务改为将分片 `PUT` 到 WebDAV，并将不含认证信息的 HTTPS 文件 URL 传给百炼；在对应转写完成后以 Basic Auth 删除该文件。
 
 ### `qwen3-asr-flash*`
 
