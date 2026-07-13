@@ -2,6 +2,53 @@
 
 Qwen STT Compatible 是一个 Go 实现的 OpenAI 风格语音转写服务。HTTP 层负责鉴权、上传、分片并发调用 DashScope ASR；音频预处理由 Go 依赖库 [Joey-Kot/ASR-Audio-Preprocess](https://github.com/Joey-Kot/ASR-Audio-Preprocess) 完成。
 
+## 性能测试
+
+测试运行于 AMD Ryzen 9 5950X 虚拟化环境，完整分配 32 个 vCPU，启用 WebDAV 与内存盘模式。测试期间 CPU 峰值尖刺不超过 30%，通常在 6%–15% 之间波动。内存盘与 SSD 的实测差异几乎可以忽略，当前瓶颈不在本地临时文件读写；测试在内网环境完成，文件传输速度略快于公网。
+
+三个样本均截取自电影音频的 `00:10:00`–`00:30:00` 片段，原始时长均为 20 分钟，内容包含人物交替或重叠说话、说话距离和音量变化、环境声与配乐。测试模型为 `qwen3-asr-flash`：英语样本为《钢铁侠 1》（6 声道、48.0 kHz、37.3 MiB、Opus），日语样本为《你的名字》（6 声道、48.0 kHz、39.8 MiB、Opus），中文样本为《让子弹飞》（2 声道、48.0 kHz、11.8 MiB、Opus）。
+
+测试使用以下参数：
+
+```bash
+MAX_UPLOAD_MB="500"
+UPSTREAM_TIMEOUT_SECONDS="10"
+API_CONCURRENCY="15"
+API_SEGMENT_LENGTH="175"
+
+FFMPEG_SEGMENT_LENGTH="5"
+FFMPEG_WORKS="16"
+SEGMENT_WORKERS="0"
+LIBAV_CODEC_THREADS="0"
+SILENT_INTERVAL="700"
+PADDING_LENGTH="100"
+OUTPUT_BITRATE="" # 未显式设置，采用默认值 128k
+
+ENABLE_LID="true"
+ENABLE_ITN="false"
+
+ASR_RETRY_MAX_ATTEMPTS="3"
+ASR_RETRY_INITIAL_DELAY="0.5"
+ASR_RETRY_FACTOR="2.0"
+ASR_RETRY_MAX_DELAY="8.0"
+```
+
+端到端耗时取 `curl` 输出的总耗时；预处理耗时从服务收到请求到输出 `segments merged_duration` 日志计算，按秒取整。裁剪率为裁剪掉的时长占原始时长的比例；端到端倍速为原始时长除以端到端耗时，裁剪后倍速为裁剪后音频时长除以端到端耗时。
+
+| 指标 | 《钢铁侠 1》英语 | 《你的名字》日语 | 《让子弹飞》中文 |
+|---|---:|---:|---:|
+| 原始时长 | 20m 0.007s | 20m 0.006s | 20m 0.007s |
+| 裁剪后时长 | 17m 8.862s | 15m 35.705s | 15m 34.507s |
+| 裁剪率 | 14.26% | 22.03% | 22.12% |
+| 预处理耗时 | 约 10s | 约 9s | 约 6s |
+| 端到端耗时 | 19s | 16s | 11s |
+| 端到端倍速 | 63.2× | 75.0× | 109.1× |
+| 裁剪后倍速 | 54.2× | 58.5× | 85.0× |
+| 准确率 | 95%–96% | 96%–97% | 97%–98% |
+| 转写结果 | [查看](testdata/performance/transcripts/ironman1.txt) | [查看](<testdata/performance/transcripts/yourname..txt>) | [查看](<testdata/performance/transcripts/Let the Bullets Fly.txt>) |
+
+准确率以官方原语言字幕为参考，由大模型结合转写结果、人工抽查辅助校对获得。由于官方字幕并非严格逐字稿，校对时会根据实际对白补充或修正字幕内容；统计忽略标点符号、断句和字幕分段差异。该指标用于衡量主要语义内容及文字识别的正确程度，不等同于标准 CER/WER。
+
 ## 特性
 
 - 兼容 `POST /v1/audio/transcriptions`
