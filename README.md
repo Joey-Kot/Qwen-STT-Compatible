@@ -7,7 +7,7 @@ Qwen STT Compatible 是一个 Go 实现的 OpenAI 风格语音转写服务。HTT
 - 兼容 `POST /v1/audio/transcriptions`
 - 支持 Bearer Token 鉴权，`API_TOKEN` 可用逗号配置多个 token
 - 预处理链路：转 WAV、固定分片并发静音裁剪、合并、按静音区间并发导出和编码 ASR 分片
-- 默认复刻 DashScope Python SDK 的临时 OSS 流程；也可配置自建 WebDAV 上传音频分片
+- 默认复刻 DashScope Python SDK 的临时 OSS 流程，也支持自建 WebDAV 作为分片存储
 - 支持 Qwen3-ASR-Flash、Fun-ASR-Flash、Fun-ASR、Paraformer 系列非实时模型，模型名原样透传给 DashScope
 - 支持非流式 JSON 返回，也支持 `stream=true` 的伪 SSE 流式返回
 - 产物是单个可运行二进制文件
@@ -100,9 +100,7 @@ ASR_RETRY_MAX_DELAY="8.0"
 
 如果使用百炼业务空间域名，将 `DASHSCOPE_HTTP_BASE_URL` 设置为 `https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/api/v1`。
 `MAX_UPLOAD_MB` 控制单个上传音频文件大小上限，默认 `500`，也可用启动参数 `--max-upload-mb` 覆盖。
-`WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 必须同时设置才会启用自定义 WebDAV；此时服务不再使用 DashScope SDK 的内置临时 OSS。`WEBDAV_CREDENTIALS` 格式为 `user@password`，密码可以包含额外的 `@`。
-
-WebDAV 地址必须是公网可访问的 HTTPS 基础地址。服务会使用账号密码对每个分片执行上传和删除操作，账号需要具备上传、下载、删除权限；传给阿里云百炼的是不带认证信息的文件 URL，因此该 URL 在无鉴权状态下必须仅能读取文件。分片转写结束后服务会删除对应的 WebDAV 临时文件。
+`WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 必须同时设置才会启用 WebDAV；未同时设置时使用 DashScope SDK 的内置临时 OSS。`WEBDAV_CREDENTIALS` 格式为 `user@password`，密码可以包含额外的 `@`。存储链路的工作方式、部署要求和取舍见下方“音频分片存储”。
 
 ASR 分片会显式输出为 `ogg` 容器、`libopus` 编码、`16000Hz`、`s16` 采样格式；`OUTPUT_BITRATE` / `--output-bitrate` 控制 Opus 码率，默认 `128k`。
 `SEGMENT_WORKERS` / `--segment-workers` 控制 ASR 分片导出和编码并发数，`0` 表示由预处理库按 CPU 自动选择；`LIBAV_CODEC_THREADS` / `--libav-codec-threads` 控制每条 libav pipeline 的 decoder/encoder 线程数，`0` 表示使用 libav 默认策略。显式调大时需要同时考虑 `FFMPEG_WORKS`，避免 Go worker 和 libav codec 线程叠加后过量并发。
@@ -156,6 +154,8 @@ go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-
 ```bash
 API_TOKEN="sk-aaa,sk-bbb" \
 DASHSCOPE_API_KEY="sk-xxx" \
+WEBDAV_URL="https://files.example.com/dav/asr" \
+WEBDAV_CREDENTIALS="user@password" \
 OUTPUT_BITRATE="128k" \
 ENABLE_LID="true" \
 ENABLE_ITN="false" \
@@ -271,15 +271,101 @@ docker run -d \
   qwen-stt-compatible:latest
 ```
 
-## DashScope 请求说明
+## 音频分片存储与上传
 
-默认情况下，本地音频分片会按 DashScope SDK 的临时 OSS 流程上传：
+转写前，服务会将处理后的音频切成 ASR 分片。分片可通过 DashScope 的临时 OSS 上传，也可通过自建 WebDAV 提供给百炼。
+
+### 推荐：内存盘模式
+
+推荐将 `/tmp` 挂载为内存盘（tmpfs），让音频预处理和分片产生的临时文件直接写入内存。容量按并发数、音频时长和文件大小上限分配，例如分配 `8G`：
+
+```bash
+sudo mount -t tmpfs -o size=8G,mode=1777 tmpfs /tmp
+```
+
+内存盘避免了临时分片反复写入 SSD 造成的写放大和损耗；本机上的临时数据只在内存、用户态和内核态之间流转，能显著缩短分片读写时间。
+
+若同时使用自建 WebDAV，建议在转写服务所在主机的 `/etc/hosts` 中将 WebDAV 域名解析到本机，使分片上传走本机回环网络：
+
+```text
+127.0.0.1 files.example.com
+```
+
+此时 `WEBDAV_URL` 仍使用公网域名（如 `https://files.example.com`）：本机服务会通过回环地址访问 Nginx 和 Dufs，而百炼仍通过该域名的公网解析拉取分片。
+
+### 默认：DashScope 临时 OSS
+
+默认情况下，服务使用内置复刻 DashScope Python SDK 的临时 OSS 流程：
 
 - 上传策略：`GET https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model=<model>`
 - OSS 上传：按策略字段 multipart 上传音频文件，返回 `oss://...`
 - 后续 DashScope 请求带 `X-DashScope-OssResourceResolve: enable`
 
-当 `WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 同时设置时，服务改为将分片 `PUT` 到 WebDAV，并将不含认证信息的 HTTPS 文件 URL 传给百炼；在对应转写完成后以 Basic Auth 删除该文件。
+依赖内置 OSS 的策略申请和上传请求。请求频率或限流等因素可能造成偶发阻塞，进而让并发分片等待，拖慢甚至卡住整条转写管线。
+
+### 推荐：自建 WebDAV
+
+同时配置 `WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 后，服务不再走临时 OSS，而是按以下方式处理每个分片：
+
+1. 服务以 Basic Auth 将分片 `PUT` 到自建 WebDAV。
+2. 服务将不含认证信息的 HTTPS 文件 URL 传给百炼。
+3. 百炼从该 URL 拉取分片并完成转写。
+4. 转写结束后，服务以 Basic Auth 删除对应的临时文件。
+
+WebDAV 应部署为百炼可访问的公网 HTTPS 服务。服务账号需要上传、下载和删除权限；由于百炼接收的是不带认证信息的 URL，分片 URL 在无鉴权时必须可读。
+
+#### 使用 Dufs 搭建 WebDAV
+
+推荐使用 [Dufs](https://github.com/sigoden/dufs) 启动 WebDAV 服务。下面的示例中，`username` 账号拥有根目录的读写权限，匿名用户仅用于读取；Dufs 仅监听本机 `127.0.0.1:6001`，分片保存在 `/tmp`：
+
+```bash
+dufs \
+  --auth 'username:passwd@/:rw' \
+  --auth '@/' \
+  -b 127.0.0.1 \
+  -p 6001 \
+  --allow-upload \
+  --allow-delete \
+  --allow-search \
+  --allow-symlink \
+  --allow-archive \
+  --enable-cors \
+  --render-index \
+  --render-try-index \
+  --render-spa \
+  /tmp
+```
+
+再使用 Nginx 将 Dufs 服务反代至公网：
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name files.example.com;
+
+    # 按常规方式配置 ssl_certificate 和 ssl_certificate_key。
+    client_max_body_size 500m;
+
+    location / {
+        proxy_pass http://127.0.0.1:6001/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+对应的服务配置如下：
+
+```bash
+WEBDAV_URL="https://files.example.com"
+WEBDAV_CREDENTIALS="username@passwd"
+```
+
+使用 WebDAV 即可绕过内置 OSS 的策略申请和上传环节，避免偶发限流使管线阻塞。将 WebDAV 部署在转写服务的同一设备上，分片写入通常更快；百炼直接从 WebDAV 拉取文件，可将原本两阶段请求的额外传输耗时压缩到接近一阶段请求的耗时。实际效果取决于 WebDAV 与转写服务、百炼之间的网络质量和带宽。
+
+## DashScope 请求说明
 
 ### `qwen3-asr-flash*`
 
