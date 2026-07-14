@@ -24,6 +24,7 @@ import (
 )
 
 func main() {
+	log.SetOutput(os.Stdout)
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {

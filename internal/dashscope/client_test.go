@@ -12,16 +12,90 @@
 package dashscope
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestNewHTTPClientUsesFreshHTTP2Connections(t *testing.T) {
+	var protocols, remoteAddrs []string
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		protocols = append(protocols, r.Proto)
+		remoteAddrs = append(remoteAddrs, r.RemoteAddr)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+
+	client := newHTTPClient(30 * time.Second)
+	transport := client.Transport.(*http.Transport)
+	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402 -- local test server only.
+	for range 2 {
+		resp, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+
+	if len(protocols) != 2 || protocols[0] != "HTTP/2.0" || protocols[1] != "HTTP/2.0" {
+		t.Fatalf("protocols=%v want two HTTP/2.0 requests", protocols)
+	}
+	if remoteAddrs[0] == remoteAddrs[1] {
+		t.Fatalf("requests reused a connection: remote addresses=%v", remoteAddrs)
+	}
+}
+
+func TestDoLogsUpstreamRequestWithoutSecrets(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousOutput) })
+
+	target, err := url.Parse(server.URL + "/upload?signature=secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.User = url.UserPassword("user", "password")
+	req, err := http.NewRequest(http.MethodGet, target.String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := New(Config{HTTPClient: server.Client()})
+	resp, err := client.do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	output := logs.String()
+	if !strings.Contains(output, "upstream request method=GET url="+server.URL+"/upload") {
+		t.Fatalf("request log missing or unexpected: %s", output)
+	}
+	if !strings.Contains(output, "upstream response method=GET") || !strings.Contains(output, "status=204 protocol=HTTP/1.1") {
+		t.Fatalf("response log missing or unexpected: %s", output)
+	}
+	if strings.Contains(output, "secret") || strings.Contains(output, "password") {
+		t.Fatalf("log contains sensitive URL data: %s", output)
+	}
+}
 
 func TestModelFamilyPrefersFunASRFlashBeforeFunASR(t *testing.T) {
 	tests := []struct {

@@ -147,6 +147,7 @@ ASR_RETRY_MAX_DELAY="8.0"
 
 如果使用百炼业务空间域名，将 `DASHSCOPE_HTTP_BASE_URL` 设置为 `https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/api/v1`。
 `MAX_UPLOAD_MB` 控制单个上传音频文件大小上限，默认 `500`，也可用启动参数 `--max-upload-mb` 覆盖。
+服务向 DashScope、OSS 和 WebDAV 发起的请求会优先协商 HTTP/2，但不复用 keep-alive 连接：每个请求都会新建并在完成后关闭其 TCP/TLS 连接。
 `WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 必须同时设置才会启用 WebDAV；未同时设置时使用 DashScope SDK 的内置临时 OSS。`WEBDAV_CREDENTIALS` 格式为 `user@password`，密码可以包含额外的 `@`。存储链路的工作方式、部署要求和取舍见下方“音频分片存储”。
 
 ASR 分片会显式输出为 `ogg` 容器、`libopus` 编码、`16000Hz`、`s16` 采样格式；`OUTPUT_BITRATE` / `--output-bitrate` 控制 Opus 码率，默认 `128k`。

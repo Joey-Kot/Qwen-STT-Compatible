@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -78,7 +80,7 @@ type ASROptions struct {
 func New(cfg Config) *Client {
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: cfg.Timeout}
+		httpClient = newHTTPClient(cfg.Timeout)
 	}
 	client := &Client{
 		apiKey: strings.TrimSpace(cfg.APIKey),
@@ -93,6 +95,18 @@ func New(cfg Config) *Client {
 		}
 	}
 	return client
+}
+
+func newHTTPClient(timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	transport.Protocols = protocols
+	// Keep HTTP/2 available for DashScope while forcing every request to create
+	// and close its own connection, avoiding shared HTTP/2 sessions.
+	transport.DisableKeepAlives = true
+	return &http.Client{Transport: transport, Timeout: timeout}
 }
 
 func (c *Client) TranscribeFile(ctx context.Context, path, model string, options ASROptions, prompt string) (string, error) {
@@ -442,7 +456,7 @@ func (c *Client) upload(ctx context.Context, model, path string) (uploadedFile, 
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
 	req.Header.Set("User-Agent", "qwen-stt-compatible")
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return uploadedFile{}, err
 	}
@@ -471,7 +485,7 @@ func (c *Client) uploadWebDAV(ctx context.Context, path string) (uploadedFile, e
 	req.Header.Set("Content-Type", contentType(path))
 	req.Header.Set("User-Agent", "qwen-stt-compatible")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return uploadedFile{}, err
 	}
@@ -496,7 +510,7 @@ func (c *Client) cleanupUploadedFile(uploaded uploadedFile) {
 	}
 	req.SetBasicAuth(c.webdav.username, c.webdav.password)
 	req.Header.Set("User-Agent", "qwen-stt-compatible")
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		log.Printf("delete WebDAV temporary audio: %v", err)
 		return
@@ -556,7 +570,7 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, payload an
 	for key, value := range extraHeaders {
 		req.Header.Set(key, value)
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -570,6 +584,59 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, payload an
 	return decoder.Decode(out)
 }
 
+// do performs and logs every outbound request. It deliberately excludes
+// request headers, bodies, credentials, and URL query parameters from logs.
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	started := time.Now()
+	target := sanitizeUpstreamURL(req.URL)
+	log.Printf("upstream request method=%s url=%s", req.Method, target)
+
+	trace := &httptrace.ClientTrace{
+		DNSDone: func(info httptrace.DNSDoneInfo) {
+			if info.Err != nil {
+				log.Printf("upstream dns method=%s url=%s error=%v", req.Method, target, info.Err)
+			}
+		},
+		ConnectDone: func(network, addr string, err error) {
+			if err != nil {
+				log.Printf("upstream connect method=%s url=%s network=%s address=%s error=%v", req.Method, target, network, addr, err)
+			}
+		},
+		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
+			if err != nil {
+				log.Printf("upstream tls method=%s url=%s error=%v", req.Method, target, err)
+			}
+		},
+		GotConn: func(info httptrace.GotConnInfo) {
+			remoteAddr := ""
+			if info.Conn != nil && info.Conn.RemoteAddr() != nil {
+				remoteAddr = info.Conn.RemoteAddr().String()
+			}
+			log.Printf("upstream connection method=%s url=%s remote=%s reused=%t idle=%t", req.Method, target, remoteAddr, info.Reused, info.WasIdle)
+		},
+	}
+	resp, err := c.http.Do(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
+	duration := time.Since(started)
+	if err != nil {
+		log.Printf("upstream error method=%s url=%s duration=%s error=%v", req.Method, target, duration, err)
+		return resp, err
+	}
+	log.Printf("upstream response method=%s url=%s status=%d protocol=%s duration=%s", req.Method, target, resp.StatusCode, resp.Proto, duration)
+	return resp, nil
+}
+
+func sanitizeUpstreamURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	sanitized := *u
+	sanitized.User = nil
+	sanitized.RawQuery = ""
+	sanitized.ForceQuery = false
+	sanitized.Fragment = ""
+	return sanitized.String()
+}
+
 func (c *Client) getJSON(ctx context.Context, endpoint string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -577,7 +644,7 @@ func (c *Client) getJSON(ctx context.Context, endpoint string, out any) error {
 	}
 	req.Header.Set("Accept", "application/json; charset=utf-8")
 	req.Header.Set("User-Agent", "qwen-stt-compatible")
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
