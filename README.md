@@ -257,6 +257,10 @@ ENABLE_ITN="false" \
 | `--asr-retry-factor` | `2.0` | `ASR_RETRY_FACTOR` | ASR 重试指数退避倍数 |
 | `--asr-retry-max-delay` | `8s` | `ASR_RETRY_MAX_DELAY` | ASR 重试最大等待时间 |
 
+Release packages include the executable, `README.md`, `LICENSE`, `NOTICE`,
+`THIRD_PARTY_NOTICES.md`, and the complete third-party license texts in
+`THIRD_PARTY_LICENSES/`.
+
 ## 运行日志与临时文件
 
 服务启动后会自动清理系统临时目录下的历史请求目录：
@@ -493,3 +497,10 @@ DashScope Python SDK 的 `MultiModalConversation.call` 实际请求：
   }
 }
 ```
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 or later.
+See [LICENSE](LICENSE) for details. Third-party dependency notices and complete
+license texts are available in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+and [`THIRD_PARTY_LICENSES/`](THIRD_PARTY_LICENSES/).

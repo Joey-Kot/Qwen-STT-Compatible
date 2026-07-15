@@ -40,6 +40,18 @@ jobs:
       - name: Run tests
         run: go test ./...
 
+      - name: Check third-party notices
+        run: |
+          test -s NOTICE
+          test -s THIRD_PARTY_NOTICES.md
+          grep -qi 'ASR-Audio-Preprocess' THIRD_PARTY_NOTICES.md
+          grep -qi 'FFmpeg' THIRD_PARTY_NOTICES.md
+          grep -qi 'Opus' THIRD_PARTY_NOTICES.md
+          test -s THIRD_PARTY_LICENSES/FFmpeg-LGPL-2.1-or-later.txt
+          grep -qi 'GNU LESSER GENERAL PUBLIC LICENSE' THIRD_PARTY_LICENSES/FFmpeg-LGPL-2.1-or-later.txt
+          test -s THIRD_PARTY_LICENSES/Opus-BSD-3-Clause.txt
+          grep -qi 'Redistribution and use in source and binary forms' THIRD_PARTY_LICENSES/Opus-BSD-3-Clause.txt
+
   build-linux:
     name: Build Linux ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
@@ -90,8 +102,9 @@ jobs:
       - name: Package binary
         run: |
           artifact="${BINARY_NAME}-linux-${{ matrix.arch }}.tar.gz"
-          cp README.md LICENSE dist/
-          tar -C dist -czf "$artifact" "$BINARY_NAME" README.md LICENSE
+          cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md dist/
+          cp -R THIRD_PARTY_LICENSES dist/
+          tar -C dist -czf "$artifact" "$BINARY_NAME" README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES
           sha256sum "$artifact" > "$artifact.sha256"
           mkdir -p upload
           mv "$artifact" "$artifact.sha256" upload/
@@ -191,8 +204,9 @@ jobs:
       - name: Package binary
         run: |
           artifact="${BINARY_NAME}-windows-${{ matrix.arch }}.zip"
-          cp README.md LICENSE dist/
-          (cd dist && zip -9 "../$artifact" "$BINARY_NAME.exe" README.md LICENSE)
+          cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md dist/
+          cp -R THIRD_PARTY_LICENSES dist/
+          (cd dist && zip -9 "../$artifact" "$BINARY_NAME.exe" README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES/*)
           sha256sum "$artifact" > "$artifact.sha256"
           mkdir -p upload
           mv "$artifact" "$artifact.sha256" upload/
