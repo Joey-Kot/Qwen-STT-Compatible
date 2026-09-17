@@ -492,6 +492,28 @@ func TestAudioDataURI(t *testing.T) {
 	}
 }
 
+func TestContentTypeCanonicalAudioTypes(t *testing.T) {
+	for _, tt := range []struct {
+		path string
+		want string
+	}{
+		{"sample.wav", "audio/wav"},
+		{"sample.WAV", "audio/wav"},
+		{"sample.ogg", "audio/ogg"},
+		{"sample.OGG", "audio/ogg"},
+		{"sample.oga", "audio/ogg"},
+		{"sample.OGA", "audio/ogg"},
+		{"sample", "application/octet-stream"},
+		{"sample.qwen-unknown-extension", "application/octet-stream"},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := contentType(tt.path); got != tt.want {
+				t.Fatalf("contentType(%q)=%q want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateBase64AudioSizeBoundary(t *testing.T) {
 	maxRawSize := maxBase64AudioSize / 4 * 3
 	if err := validateBase64AudioSize(maxRawSize); err != nil {

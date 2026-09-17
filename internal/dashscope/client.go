@@ -761,11 +761,16 @@ func validateAudioFileSize(path, model string) error {
 }
 
 func contentType(path string) string {
-	if typ := mime.TypeByExtension(strings.ToLower(filepath.Ext(path))); typ != "" {
-		return typ
-	}
-	if strings.HasSuffix(strings.ToLower(path), ".ogg") {
+	ext := strings.ToLower(filepath.Ext(path))
+	// Keep audio MIME types stable across platform-specific MIME databases.
+	switch ext {
+	case ".wav":
+		return "audio/wav"
+	case ".ogg", ".oga":
 		return "audio/ogg"
+	}
+	if typ := mime.TypeByExtension(ext); typ != "" {
+		return typ
 	}
 	return "application/octet-stream"
 }
