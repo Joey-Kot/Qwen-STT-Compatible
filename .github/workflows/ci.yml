@@ -10,12 +10,10 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 env:
   BINARY_NAME: qwen-stt-compatible
   GO_VERSION: "1.26.4"
-  REGISTRY: ghcr.io
 
 jobs:
   test:
@@ -218,12 +216,86 @@ jobs:
           path: upload/*
           if-no-files-found: error
 
+  build-macos:
+    name: Build macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+            runner: macos-15-intel
+          - arch: arm64
+            goarch: arm64
+            runner: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install build tools
+        run: brew install autoconf automake libtool pkg-config gnupg coreutils
+
+      - name: Build static audio dependencies
+        run: ./scripts/bootstrap-static-audio-deps.sh
+        env:
+          CC: clang
+          JOBS: 2
+
+      - name: Verify FFmpeg filters
+        run: grep -q '#define CONFIG_ASPLIT_FILTER 1' third_party/src/ffmpeg-*/config_components.h
+
+      # Link audio libraries statically, but retain macOS system libraries.
+      - name: Build binary
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=1 \
+          GOOS=darwin \
+          GOARCH="${{ matrix.goarch }}" \
+          CC=clang \
+          PKG_CONFIG_PATH="$PWD/third_party/ffmpeg-audio/lib/pkgconfig" \
+          PKG_CONFIG="pkg-config --static" \
+          go build -tags libav -trimpath -ldflags="-s -w -linkmode external" -o "dist/${BINARY_NAME}" ./cmd/server
+
+      - name: Test with libav
+        run: go test -tags libav ./...
+        env:
+          CGO_ENABLED: "1"
+          CC: clang
+          PKG_CONFIG_PATH: ${{ github.workspace }}/third_party/ffmpeg-audio/lib/pkgconfig
+          PKG_CONFIG: pkg-config --static
+
+      - name: Package binary
+        run: |
+          artifact="${BINARY_NAME}-darwin-${{ matrix.arch }}.tar.gz"
+          cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md dist/
+          cp -R THIRD_PARTY_LICENSES dist/
+          tar -C dist -czf "$artifact" "$BINARY_NAME" README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES
+          shasum -a 256 "$artifact" > "$artifact.sha256"
+          mkdir -p upload
+          mv "$artifact" "$artifact.sha256" upload/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}-darwin-${{ matrix.arch }}
+          path: upload/*
+          if-no-files-found: error
+
   release-latest:
     name: Latest release
     runs-on: ubuntu-24.04
     needs:
       - build-linux
       - build-windows
+      - build-macos
     if: github.event_name != 'pull_request' && (github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch')
     steps:
       - name: Checkout
@@ -261,49 +333,3 @@ jobs:
           replacesArtifacts: true
           artifactErrorsFailBuild: true
           makeLatest: true
-
-  docker:
-    name: Docker image
-    runs-on: ubuntu-24.04
-    needs: test
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Normalize image name
-        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch' }}
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha,prefix=sha-,format=short
-
-      - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and optionally push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}

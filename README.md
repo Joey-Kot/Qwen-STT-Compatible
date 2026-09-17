@@ -1,14 +1,27 @@
+[English](README.md) | [简体中文](README_ZH.md)
+
 # Qwen STT Compatible
 
-Qwen STT Compatible 是一个 Go 实现的 OpenAI 风格语音转写服务。非实时模型通过 HTTP 调用 DashScope ASR，音频预处理由 Go 依赖库 [Joey-Kot/ASR-Audio-Preprocess](https://github.com/Joey-Kot/ASR-Audio-Preprocess) 完成；实时模型通过 WebSocket 持续发送音频并接收识别结果，支持文件 SSE 和 OpenAI Realtime 转写会话。
+Qwen STT Compatible is an OpenAI-style speech transcription service written in Go. Non-realtime models call DashScope ASR over HTTP, with audio preprocessing handled by the Go dependency [Joey-Kot/ASR-Audio-Preprocess](https://github.com/Joey-Kot/ASR-Audio-Preprocess). Realtime models continuously send audio and receive recognition results over WebSocket, supporting file-based SSE and OpenAI Realtime transcription sessions.
 
-## 性能测试
+## Downloads
 
-测试运行于 AMD Ryzen 9 5950X 虚拟化环境，完整分配 32 个 vCPU，启用 WebDAV 与内存盘模式。测试期间 CPU 峰值尖刺不超过 30%，通常在 6%–15% 之间波动。内存盘与 SSD 的实测差异几乎可以忽略，当前瓶颈不在本地临时文件读写；测试在内网环境完成，文件传输速度略快于公网。
+| Platform | Download | SHA-256 |
+|---|---|---|
+| Linux x86_64 | [linux-x86_64](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-linux-amd64.tar.gz) | [sha256](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-linux-amd64.tar.gz.sha256) |
+| Linux arm64 | [linux-arm64](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-linux-arm64.tar.gz) | [sha256](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-linux-arm64.tar.gz.sha256) |
+| Windows x86_64 | [windows-x86_64](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-windows-amd64.zip) | [sha256](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-windows-amd64.zip.sha256) |
+| Windows arm64 | [windows-arm64](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-windows-arm64.zip) | [sha256](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-windows-arm64.zip.sha256) |
+| macOS x86_64 | [macos-x86_64](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-darwin-amd64.tar.gz) | [sha256](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-darwin-amd64.tar.gz.sha256) |
+| macOS arm64 | [macos-arm64](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-darwin-arm64.tar.gz) | [sha256](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-darwin-arm64.tar.gz.sha256) |
 
-三个样本均截取自电影音频的 `00:10:00`–`00:30:00` 片段，原始时长均为 20 分钟，内容包含人物交替或重叠说话、说话距离和音量变化、环境声与配乐。测试模型为 `qwen3-asr-flash`：英语样本为《钢铁侠 1》（6 声道、48.0 kHz、37.3 MiB、Opus），日语样本为《你的名字》（6 声道、48.0 kHz、39.8 MiB、Opus），中文样本为《让子弹飞》（2 声道、48.0 kHz、11.8 MiB、Opus）。
+## Silence Trimming Benchmarks
 
-测试使用以下参数：
+Tests ran in a virtualized AMD Ryzen 9 5950X environment with all 32 vCPUs allocated, using WebDAV and a RAM disk. CPU spikes stayed below 30%, with typical usage between 6% and 15%. The measured difference between the RAM disk and SSD was negligible; local temporary-file I/O was not the bottleneck. Tests ran on a local network, where file transfers were slightly faster than over the public internet.
+
+All three samples cover the `00:10:00`–`00:30:00` portion of movie audio, with an original duration of 20 minutes each. They include alternating and overlapping dialogue, varying speaker distances and volumes, ambient sound, and music. The model was `qwen3-asr-flash`: the English sample was from *Iron Man* (6 channels, 48.0 kHz, 37.3 MiB, Opus), the Japanese sample from *Your Name* (6 channels, 48.0 kHz, 39.8 MiB, Opus), and the Chinese sample from *Let the Bullets Fly* (2 channels, 48.0 kHz, 11.8 MiB, Opus).
+
+Test configuration:
 
 ```bash
 MAX_UPLOAD_MB="500"
@@ -23,7 +36,7 @@ SEGMENT_WORKERS="0"
 LIBAV_CODEC_THREADS="0"
 SILENT_INTERVAL="700"
 PADDING_LENGTH="100"
-OUTPUT_BITRATE="" # 未显式设置，采用默认值 128k
+OUTPUT_BITRATE="" # Not explicitly set; uses the default 128k
 
 ENABLE_LID="true"
 ENABLE_ITN="false"
@@ -34,50 +47,64 @@ ASR_RETRY_FACTOR="2.0"
 ASR_RETRY_MAX_DELAY="8.0"
 ```
 
-性能测试均使用 `SKIP_TRIM=false`。端到端耗时取 `curl` 输出的总耗时；预处理耗时从服务收到请求到输出 `segments merged_duration` 日志计算，按秒取整。裁剪率为裁剪掉的时长占原始时长的比例；端到端倍速为原始时长除以端到端耗时，裁剪后倍速为裁剪后音频时长除以端到端耗时。
+All benchmarks used `SKIP_TRIM=false`. End-to-end time is the total time reported by `curl`. Preprocessing time is measured from receipt of the request to the `segments merged_duration` log entry, rounded to whole seconds. The trimming ratio is the removed duration divided by the original duration. End-to-end speed is the original audio duration divided by end-to-end time; post-trim speed uses the trimmed audio duration instead.
 
-| 指标 | 《钢铁侠 1》英语 | 《你的名字》日语 | 《让子弹飞》中文 |
+| Metric | Iron Man (English) | Your Name (Japanese) | Let the Bullets Fly (Chinese) |
 |---|---:|---:|---:|
-| 原始时长 | 20m 0.007s | 20m 0.006s | 20m 0.007s |
-| 裁剪后时长 | 17m 8.862s | 15m 35.705s | 15m 34.507s |
-| 裁剪率 | 14.26% | 22.03% | 22.12% |
-| 预处理耗时 | 约 10s | 约 9s | 约 6s |
-| 端到端耗时 | 19s | 16s | 11s |
-| 端到端倍速 | 63.2× | 75.0× | 109.1× |
-| 裁剪后倍速 | 54.2× | 58.5× | 85.0× |
-| 准确率 | 95%–96% | 96%–97% | 97%–98% |
-| 转写结果 | [查看](testdata/performance/transcripts/ironman1.txt) | [查看](<testdata/performance/transcripts/yourname..txt>) | [查看](<testdata/performance/transcripts/Let the Bullets Fly.txt>) |
+| Original duration | 20m 0.007s | 20m 0.006s | 20m 0.007s |
+| Duration after trimming | 17m 8.862s | 15m 35.705s | 15m 34.507s |
+| Trimming ratio | 14.26% | 22.03% | 22.12% |
+| Preprocessing time | Approx. 10s | Approx. 9s | Approx. 6s |
+| End-to-end time | 19s | 16s | 11s |
+| End-to-end speed | 63.2× | 75.0× | 109.1× |
+| Post-trim speed | 54.2× | 58.5× | 85.0× |
+| Accuracy | 95%–96% | 96%–97% | 97%–98% |
+| Transcripts | [View](testdata/performance/transcripts/ironman1.txt) | [View](<testdata/performance/transcripts/yourname..txt>) | [View](<testdata/performance/transcripts/Let the Bullets Fly.txt>) |
 
-准确率以官方原语言字幕为参考，由大模型结合转写结果、人工抽查辅助校对获得。由于官方字幕并非严格逐字稿，校对时会根据实际对白补充或修正字幕内容；统计忽略标点符号、断句和字幕分段差异。该指标用于衡量主要语义内容及文字识别的正确程度，不等同于标准 CER/WER。
+Accuracy was assessed against official subtitles in the original language, using an LLM to compare transcripts and manual spot checks to assist verification. Because official subtitles are not strictly verbatim, subtitle content was supplemented or corrected against the actual dialogue. Punctuation, sentence boundaries, and subtitle segmentation were ignored. This metric measures the correctness of the main meaning and recognized text; it is not standard CER/WER.
 
-## 特性
+## Features
 
-- 兼容 `POST /v1/audio/transcriptions`
-- 支持 Bearer Token 鉴权，`API_TOKEN` 可用逗号配置多个 token
-- 非实时预处理链路：默认转 WAV、固定分片并发静音裁剪、合并、按静音区间并发导出和编码 ASR 分片；`SKIP_TRIM=true` 或请求 `stream=true` 时，跳过裁剪和合并，统一转 WAV 后直接按静音区间分片
-- 非实时 Qwen3-ASR-Flash、Qwen-Audio-3.0-ASR-Flash、Fun-ASR-Flash 使用 Base64 Data URI 直接传入音频，并校验编码后的数据不超过 10 MiB；Qwen-Audio-3.0-ASR-Flash-Filetrans、Fun-ASR、Paraformer 使用 URL，分片文件不超过 2 GiB
-- 支持 Qwen-Audio-3.0-ASR-Flash、Qwen-Audio-3.0-ASR-Flash-Filetrans、Qwen3-ASR-Flash、Fun-ASR-Flash、Fun-ASR、Paraformer 系列非实时模型，模型名原样透传给 DashScope
-- 支持 Qwen-Audio-3.0-ASR-Flash-Streaming、Fun-ASR-Realtime、Fun-ASR-Flash-8k-Realtime、Qwen3-ASR-Flash-Realtime 和 Paraformer-Realtime 系列实时模型，分别适配二进制音频和 Base64 音频事件协议
-- 文件接口支持非流式 JSON；`stream=true` 时，非实时模型保留伪流式，实时模型按确认的句子或文本前缀持续返回 SSE
-- 支持 `GET /v1/realtime` WebSocket 转写会话，提供持续音频输入、手动提交、清空和上游 VAD 自动断句
-- 产物是单个服务二进制文件；实时文件解码另需 `ffmpeg` 可执行文件，Docker 镜像已包含
+### Interfaces and Authentication
+
+- OpenAI-style file transcription via `POST /v1/audio/transcriptions`, with JSON and SSE responses
+- WebSocket transcription sessions via `GET /v1/realtime`, with continuous audio input, manual commit, clear, and upstream VAD-based automatic segmentation
+- Bearer token authentication, with multiple comma-separated tokens supported in `API_TOKEN`
+
+### Models and Streaming
+
+- Supports non-realtime and realtime Qwen, Fun-ASR, and Paraformer speech recognition models, passing model names to DashScope unchanged; see [Supported Models](#supported-models)
+- Non-realtime models: recognize audio segments concurrently; `stream=true` uses pseudo-streaming, emitting SSE only after all recognition has finished
+- Realtime models: continuously send audio and receive results over upstream WebSocket connections; file requests with `stream=true` emit confirmed sentences or text prefixes as SSE
+
+### Audio Processing and Uploads
+
+- Non-realtime audio is transcoded, trimmed for silence in parallel fixed-length slices, merged, and then split at silence intervals for concurrent ASR segment export and encoding; `SKIP_TRIM=true` or a request with `stream=true` skips trimming and merging
+- Non-realtime segments use Ogg + Opus and are converted to the model's supported sample rate; Base64 and URL uploads enforce their respective size limits, as described in [Audio Segment Storage and Uploads](#audio-segment-storage-and-uploads)
+- Realtime audio uses continuous PCM transmission without silence trimming, separate recognition tasks, or public audio URLs
+
+### Builds and Deployment
+
+- Linux, Windows, and macOS builds for x86_64 / ARM64, deployable as a single service binary
+- Realtime file decoding additionally requires the `ffmpeg` executable; the continuous-PCM WebSocket endpoint does not
+- Reverse proxies must disable response buffering for file SSE, forward WebSocket Upgrade headers for `/v1/realtime`, and use timeouts suitable for long-lived connections
 
 ## API
 
 ### `POST /v1/audio/transcriptions`
 
-`multipart/form-data` 字段：
+`multipart/form-data` fields:
 
-- `file`：音频文件
-- `model`：模型名，原样透传给 DashScope；支持清单见下方“支持模型”
-- `language`：可选，2–3 字母语言码，如 `zh`、`en`、`yue`；实时模型还会按具体型号检查语种支持
-- `prompt`：可选；非实时 Qwen3-ASR-Flash 使用 system 上下文，同步 Qwen-Audio-3.0-ASR-Flash / Fun-ASR-Flash 使用 `input_text` 消息，Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR 使用 `input.context`；实时型号按下方上下文能力限制校验，Qwen3-ASR-Flash-Realtime 和 Paraformer-Realtime 不支持非空 `prompt`
-- `enable_lid`：兼容字段，当前支持的模型不会将其传给上游
-- `enable_itn`：可选，非实时模型默认读取服务配置 `ENABLE_ITN` / `--enable-itn`；实时模型忽略此字段
-- `stream`：可选，默认 `false`；设为 `true` 时返回 SSE，非实时模型同时强制跳过固定切片静音裁剪和合并
-- `response_format`：实时模型仅支持省略或 `json`
+- `file`: audio file
+- `model`: model name, passed unchanged to DashScope; see Supported Models below
+- `language`: optional 2–3-letter language code, such as `zh`, `en`, or `yue`; realtime models also validate language support for the specific model
+- `prompt`: optional; non-realtime Qwen3-ASR-Flash uses system context, synchronous Qwen-Audio-3.0-ASR-Flash / Fun-ASR-Flash use an `input_text` message, and Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR use `input.context`. Realtime models validate context support as described below; Qwen3-ASR-Flash-Realtime and Paraformer-Realtime reject nonempty `prompt` values
+- `enable_lid`: compatibility field; currently supported models do not forward it upstream
+- `enable_itn`: optional; non-realtime models default to the service's `ENABLE_ITN` / `--enable-itn` setting; realtime models ignore this field
+- `stream`: optional, defaults to `false`; `true` returns SSE and also forces non-realtime models to skip fixed-slice silence trimming and merging
+- `response_format`: realtime models only support omission or `json`
 
-示例：
+Example:
 
 ```bash
 curl -X POST "http://localhost:8080/v1/audio/transcriptions" \
@@ -88,15 +115,15 @@ curl -X POST "http://localhost:8080/v1/audio/transcriptions" \
   -F "enable_itn=false"
 ```
 
-非流式响应：
+Non-streaming response:
 
 ```json
 {"status":"success","text":"..."}
 ```
 
-非实时模型使用 `stream=true` 时，本次请求强制按 `SKIP_TRIM=true` 处理，即使服务配置为 `false` 也跳过固定切片静音裁剪和合并。统一转 WAV 后，仍按 `API_SEGMENT_LENGTH` 分片，由 `SEGMENT_WORKERS` 控制分片导出和编码并发，`API_CONCURRENCY` 控制上游识别并发；`FFMPEG_SEGMENT_LENGTH` 和 `FFMPEG_WORKS` 不参与裁剪。此覆盖不修改全局配置，也不影响其他请求。
+For non-realtime models, `stream=true` forces this request to behave as if `SKIP_TRIM=true`, skipping fixed-slice silence trimming and merging even when the service setting is `false`. After conversion to WAV, audio is still segmented according to `API_SEGMENT_LENGTH`, with `SEGMENT_WORKERS` controlling export and encoding concurrency and `API_CONCURRENCY` controlling upstream recognition concurrency. `FFMPEG_SEGMENT_LENGTH` and `FFMPEG_WORKS` are not used for trimming. This override does not change global configuration or affect other requests.
 
-伪流式响应仍在全部分片识别结束后输出：
+Pseudo-streaming responses are still emitted only after all segments have been recognized:
 
 ```text
 data: {"type":"transcript.text.delta","delta":"..."}
@@ -106,7 +133,7 @@ data: {"type":"transcript.text.done","text":"..."}
 data: [DONE]
 ```
 
-实时模型使用同一文件接口：
+Realtime models use the same file endpoint:
 
 ```bash
 curl -N -X POST "http://localhost:8080/v1/audio/transcriptions" \
@@ -117,29 +144,29 @@ curl -N -X POST "http://localhost:8080/v1/audio/transcriptions" \
   -F "stream=true"
 ```
 
-使用 Qwen-ASR-Realtime 系列时，将示例中的模型替换为 `qwen3-asr-flash-realtime` 或其日期版本；Paraformer 实时系列可替换为 `paraformer-realtime-v2`、`paraformer-realtime-v1`、`paraformer-realtime-8k-v2` 或 `paraformer-realtime-8k-v1`。实时模型均不需要提供音频公网 URL。
+For Qwen-ASR-Realtime, replace the example model with `qwen3-asr-flash-realtime` or a dated version. For Paraformer realtime models, use `paraformer-realtime-v2`, `paraformer-realtime-v1`, `paraformer-realtime-8k-v2`, or `paraformer-realtime-8k-v1`. No realtime model requires a public audio URL.
 
-上传完成后，服务通过 FFmpeg 管道连续解码为单声道 PCM16，不裁剪静音、不拆成独立识别任务。Qwen3-ASR-Flash-Realtime 和 `paraformer-realtime-v1` 使用 16000 Hz，Fun-ASR / Paraformer 的 8k 实时型号使用 8000 Hz，其余已支持的实时型号使用 24000 Hz。文件音频按约 100 ms 的块、以约 1 倍音频速度发送；这是一项保守的发送策略，长文件不会获得非实时分片并发识别的处理倍速。
+After upload, the service continuously decodes audio into mono PCM16 through an FFmpeg pipe, without trimming silence or splitting it into independent recognition tasks. Qwen3-ASR-Flash-Realtime and `paraformer-realtime-v1` use 16000 Hz; Fun-ASR / Paraformer 8k realtime models use 8000 Hz; other supported realtime models use 24000 Hz. File audio is sent in approximately 100 ms chunks at roughly real-time speed. This conservative sending policy means long files do not gain the processing speedup of concurrent non-realtime segment recognition.
 
-实时 SSE 持续输出确认文本，最后返回全文，不额外发送 `[DONE]`：
+Realtime SSE emits confirmed text continuously and returns the full text at the end, without an additional `[DONE]`:
 
 ```text
-data: {"type":"transcript.text.delta","delta":"第一句。"}
+data: {"type":"transcript.text.delta","delta":"First sentence. "}
 
-data: {"type":"transcript.text.delta","delta":"第二句。"}
+data: {"type":"transcript.text.delta","delta":"Second sentence."}
 
-data: {"type":"transcript.text.done","text":"第一句。第二句。"}
+data: {"type":"transcript.text.done","text":"First sentence. Second sentence."}
 ```
 
-Fun-ASR 和 Paraformer 协议只输出最终确认的句子，不将可能改写的中间全文拼接为增量。Qwen-ASR 协议使用上游 VAD，在文件发送过程中按 `text` 已确认前缀输出新增部分，收到最终 `transcript` 后补齐余下文本；可能修订的 `stash` 草稿不输出。Qwen 多个项目的结果即使乱序到达，文件全文仍按语音顺序拼接，必要时暂存后续项目的结果。
+The Fun-ASR and Paraformer protocols emit only finalized sentences, not intermediate full-text hypotheses that may be revised. The Qwen-ASR protocol uses upstream VAD and emits additions to the confirmed `text` prefix while the file is being sent, then fills in the remaining text from the final `transcript`. The revisable `stash` draft is not emitted. Even if Qwen item results arrive out of order, the full file transcript is assembled in speech order, buffering later results when necessary.
 
-流中每 15 秒发送一次 SSE 注释保活。开始输出前的错误返回 HTTP JSON；开始输出后的错误通过 `type=error` 事件通知并结束，不再发送成功的 `transcript.text.done`。`stream=false` 使用相同的实时上游链路，结束后返回完整 JSON。
+An SSE comment is sent every 15 seconds as a keepalive. Errors before output starts return HTTP JSON; errors after output starts emit a `type=error` event and end the stream without a successful `transcript.text.done`. `stream=false` uses the same realtime upstream path and returns the full JSON result at completion.
 
 ### `GET /v1/realtime`
 
-WebSocket 地址：`ws://localhost:8080/v1/realtime?intent=transcription`。生产部署通过 TLS 反向代理使用 `wss://`。鉴权沿用 `Authorization: Bearer <API_TOKEN>`，也支持 `x-api-key`；不通过 URL 查询参数接收密钥。可协商 `realtime` 子协议，默认执行同源 Origin 检查。
+WebSocket URL: `ws://localhost:8080/v1/realtime?intent=transcription`. Use `wss://` through a TLS reverse proxy in production. Authentication uses `Authorization: Bearer <API_TOKEN>` or `x-api-key`; keys are not accepted in URL query parameters. The `realtime` subprotocol can be negotiated, and same-origin Origin checks are enabled by default.
 
-采用 OpenAI Realtime 的 `session.update` 转写会话结构。连接后先接收 `session.created`，再发送配置：
+Uses the OpenAI Realtime `session.update` transcription-session structure. After connecting, receive `session.created`, then send the configuration:
 
 ```json
 {
@@ -152,7 +179,7 @@ WebSocket 地址：`ws://localhost:8080/v1/realtime?intent=transcription`。生�
         "transcription": {
           "model": "qwen-audio-3.0-asr-flash-streaming",
           "language": "zh",
-          "prompt": "专有词：通义千问"
+          "prompt": "Terminology: Qwen"
         },
         "turn_detection": null,
         "noise_reduction": null
@@ -162,101 +189,129 @@ WebSocket 地址：`ws://localhost:8080/v1/realtime?intent=transcription`。生�
 }
 ```
 
-收到 `session.updated` 后，可持续发送音频：
+After receiving `session.updated`, send audio continuously:
 
 ```json
-{"type":"input_audio_buffer.append","audio":"<Base64 编码的 PCM16 音频块>"}
+{"type":"input_audio_buffer.append","audio":"<Base64-encoded PCM16 audio chunk>"}
 ```
 
-音频必须为 **24000 Hz、单声道、16 位小端 PCM**，不包含 WAV 文件头，每块按完整的 16 位样本对齐。Fun-ASR 普通实时型号和 `paraformer-realtime-v2` 解码 Base64 后直接发送上游；8k 型号使用带低通滤波的连续重采样转换为 8000 Hz，`paraformer-realtime-v1` 转换为 16000 Hz。Qwen3-ASR-Flash-Realtime 则连续重采样为 16000 Hz，再按块编码为 Base64 发送，重采样状态均跨音频块保留。
+Audio must be **24000 Hz, mono, 16-bit little-endian PCM**, without a WAV header. Each chunk must align to complete 16-bit samples. Standard Fun-ASR realtime models and `paraformer-realtime-v2` receive the Base64-decoded audio directly. The 8k models use continuous low-pass-filtered resampling to 8000 Hz, and `paraformer-realtime-v1` to 16000 Hz. Qwen3-ASR-Flash-Realtime uses continuous resampling to 16000 Hz, then Base64-encodes each chunk for transmission. Resampler state is retained across chunks.
 
-选择 Qwen-ASR-Realtime 时，可将会话示例中的 `transcription` 替换为以下内容，其余输入格式不变；不要携带原示例的非空 `prompt`：
+For Qwen-ASR-Realtime, replace `transcription` in the session example with the following, leaving the input format unchanged. Do not include the original example's nonempty `prompt`:
 
 ```json
 {"model":"qwen3-asr-flash-realtime","language":"zh"}
 ```
 
-Paraformer 实时系列同样不携带非空 `prompt`，例如：
+Paraformer realtime models also require an empty or omitted `prompt`, for example:
 
 ```json
 {"model":"paraformer-realtime-v2","language":"zh"}
 ```
 
-默认 `turn_detection=null`，由客户端手动提交，每轮至少 100 ms：
+By default, `turn_detection=null` and the client commits manually, with at least 100 ms of audio per turn:
 
 ```json
 {"type":"input_audio_buffer.commit"}
 ```
 
-服务返回 `input_audio_buffer.committed` 和 `conversation.item.added`，随后返回该轮的 `conversation.item.input_audio_transcription.delta`，最后发送 `conversation.item.input_audio_transcription.completed`。Fun-ASR 和 Paraformer 协议将提交前收到的确认句子暂存在服务端，提交后输出，并将同一轮的多个句子合并为最终文本；Qwen-ASR 协议关闭上游 VAD，手动提交后接收确认前缀增量和最终文本，不输出草稿。
+The service returns `input_audio_buffer.committed` and `conversation.item.added`, followed by `conversation.item.input_audio_transcription.delta` for that turn, and finally `conversation.item.input_audio_transcription.completed`. The Fun-ASR and Paraformer protocols buffer confirmed sentences received before commit, emit them after commit, and merge multiple sentences in the same turn into a final transcript. The Qwen-ASR protocol disables upstream VAD and receives confirmed-prefix deltas and final text after manual commit, without emitting drafts.
 
-提交不关闭客户端连接，可以继续发送下一轮音频。使用 `item_id` 关联结果，使用 `previous_item_id` 确认轮次顺序；不同轮次可能按不同顺序完成。若前一轮 Qwen VAD 仍在刷新尾部，后续轮次可以继续发送音频，但提交确认和识别结果会等待前一轮的项目边界确定后再输出，避免轮次顺序错乱。
+Committing does not close the client connection; audio for the next turn can follow. Use `item_id` to correlate results and `previous_item_id` to determine turn order; turns may finish out of order. If the previous Qwen VAD turn is still flushing its tail, subsequent turns can continue sending audio, but their commit acknowledgments and recognition results wait until the previous turn's item boundaries are known.
 
 ```json
 {"type":"input_audio_buffer.clear"}
 ```
 
-清空返回 `input_audio_buffer.cleared`，取消当前尚未提交的音频并忽略迟到结果；已经提交的轮次继续处理。Qwen VAD 的同一上游连接可能同时包含已提交项目和未提交尾部：此时服务保留已提交项目并等待其完成，丢弃未提交尾部的结果，下一轮使用新上游连接。
+Clearing returns `input_audio_buffer.cleared`, cancels the current uncommitted audio, and ignores late results; committed turns continue processing. A Qwen VAD upstream connection may contain both committed items and an uncommitted tail. In that case, the service retains committed items until completion, discards results for the uncommitted tail, and uses a new upstream connection for the next turn.
 
-如需边说边自动返回结果，将 `audio.input.turn_detection` 设置为：
+To receive results automatically as you speak, set `audio.input.turn_detection` to:
 
 ```json
 {"type":"server_vad","silence_duration_ms":1300}
 ```
 
-`silence_duration_ms` 支持 200–6000。Fun-ASR 和 Paraformer v2 协议映射到上游 `max_sentence_silence`：首次收到句子结果时返回 `input_audio_buffer.speech_started`，最终确认时返回 `speech_stopped`、自动提交和转写结果。Qwen-ASR 协议映射到同名参数，分别转换上游语音开始、语音结束、提交和识别事件；VAD 阈值固定使用上游推荐的 `0.0`，不开放客户端 `threshold` 参数。
+`silence_duration_ms` supports 200–6000. Fun-ASR and Paraformer v2 map it to upstream `max_sentence_silence`: the first sentence result triggers `input_audio_buffer.speech_started`, and final confirmation triggers `speech_stopped`, automatic commit, and transcription results. Qwen-ASR maps it to the parameter of the same name and translates upstream speech-start, speech-stop, commit, and recognition events. The VAD threshold is fixed at the upstream-recommended `0.0`; the client `threshold` parameter is not exposed.
 
-Paraformer v1 两个型号不支持自定义静音阈值；开启自动断句时只传 `{"type":"server_vad"}`，使用上游默认断句行为。显式传入 `silence_duration_ms` 会返回错误，服务返回的 v1 会话配置也不包含该字段。从其他型号切换到 v1 时，如先前设置过静音阈值，需要同时将 `turn_detection` 更新为 `null` 或只含 `type` 的对象。
+Neither Paraformer v1 model supports a custom silence threshold. To enable automatic segmentation, send only `{"type":"server_vad"}` to use upstream defaults. Explicit `silence_duration_ms` values return an error, and the returned v1 session configuration omits this field. When switching from another model to v1 after setting a silence threshold, also update `turn_detection` to `null` or an object containing only `type`.
 
-仍可手动 `commit` 刷出尚未确认的尾部音频。Qwen VAD 模式下，这会发送上游 `session.finish`，等待尾句及 `session.finished`，不会发送上游禁止的 `input_audio_buffer.commit`；下游提交确认以实际返回的项目为准，没有检测到语音时可能没有新项目。此模式使用阿里云的 VAD，不保证与 OpenAI 的断句时机完全一致。
+You can still manually `commit` to flush unconfirmed trailing audio. In Qwen VAD mode, this sends upstream `session.finish` and waits for the final sentence and `session.finished`; it does not send the upstream-prohibited `input_audio_buffer.commit`. Downstream commit acknowledgments reflect the items actually returned, so no new item may appear if no speech was detected. This mode uses Alibaba Cloud VAD and does not guarantee the same segmentation timing as OpenAI.
 
-VAD 断句后，手动提交的 100 ms 下限按已确认语音边界之后的音频计算：Fun-ASR / Paraformer 使用最终结果 `end_time`，Qwen-ASR 使用 `speech_stopped.audio_end_ms`，均换算到客户端 24000 Hz 样本计数。Paraformer 的结束时间缺失或无效时，尝试使用有效的字级结束时间；仍无法确定边界时，VAD 模式返回错误并关闭会话，不伪造提交时间。边界事件迟到时，已发送到上游但位于该边界之后的音频仍保留；空缓冲或不足 100 ms 的提交返回错误，不结束当前上游任务。
+After VAD segmentation, the 100 ms minimum for manual commit counts only audio after the confirmed speech boundary: Fun-ASR / Paraformer use the final `end_time`, while Qwen-ASR uses `speech_stopped.audio_end_ms`, both converted to client-side 24000 Hz sample counts. If a Paraformer end time is missing or invalid, valid word-level end times are used when available. If the boundary still cannot be determined, VAD mode returns an error and closes the session rather than fabricating a commit time. When boundary events arrive late, audio already sent upstream but located after that boundary is retained. Empty buffers or commits below 100 ms return an error without ending the current upstream task.
 
-兼容范围与限制：
+#### Compatibility and Limitations
 
-- 仅实现转写会话，支持 `session.update`、音频 `append` / `commit` / `clear`；不支持旧版 `transcription_session.update`、WebRTC、临时客户端密钥、语音生成和工具调用。
-- 仅支持上述 PCM 输入；不支持 G.711、`semantic_vad`、VAD `threshold` / `prefix_padding_ms`、降噪或 logprobs，不支持的字段和事件返回错误。
-- 会话支持局部更新。音频输入期间只能更新支持上下文的型号的 `prompt`；更换模型、语言或断句配置需先 `commit` 或 `clear`。
-- `prompt` 最多 400 个字符，仅 `qwen-audio-3.0-asr-flash-streaming`、`fun-asr-realtime`、`fun-asr-realtime-2025-11-07` 支持；其他型号传非空 `prompt` 返回错误。
-- 单条客户端 JSON 消息不超过 1 MiB，包括 Base64 文本和 JSON 字段；每个会话最多保留 4 个尚未结束的上游任务，包含当前输入任务。超出后需等待并重新发送被拒绝的音频。
-- Fun-ASR / Paraformer 手动提交的单轮累计文本、Qwen-ASR 每个项目的文本不超过 1 MiB，实时文件转写全文不超过 8 MiB。Qwen 单个上游连接最多处理 4096 个项目，同时未完成项目最多 64 个，其确认文本合计不超过 8 MiB；长会话可通过 `commit` 结束当前上游连接后继续下一轮。
-- 等待前一轮 Qwen VAD 尾部时，每个后续任务最多缓存 64 个事件、8 MiB 文本数据；相邻的同项目确认前缀更新会合并。超出保护限制返回错误，不无限缓存。
-- 音频总大小不套用非实时 Base64 10 MiB 或 URL 2 GiB 限制；文件入口仍受 `MAX_UPLOAD_MB` 限制。Qwen 上游非 VAD 单次 `append.audio` 的 Base64 上限为 15 MiB，服务实际拆为最多 3200 字节 PCM 的小块并校验编码后大小；客户端仍受上述单条 JSON 1 MiB 限制。
-- 上游连接或协议失败会发送错误事件并关闭会话，不自动重连或重放音频；已提交的未完成条目还会返回 `conversation.item.input_audio_transcription.failed`。Qwen 的单项识别失败仅返回该项 `failed`，不伪造成功完成，其他项目和客户端会话可以继续。客户端断开时取消所有未结束任务。
+##### Interface Support
 
-接口结构参考 [OpenAI 文件转写](https://developers.openai.com/api/docs/guides/speech-to-text) 和 [OpenAI Realtime 转写](https://developers.openai.com/api/docs/guides/realtime-transcription)，兼容范围以上述实现为准。
+- Implements transcription sessions only, supporting `session.update` and audio `append` / `commit` / `clear`.
+- Does not support the legacy `transcription_session.update`, WebRTC, ephemeral client keys, speech generation, or tool calling.
+- Does not support `semantic_vad`, VAD `threshold` / `prefix_padding_ms`, noise reduction, or logprobs. Unsupported fields and events return errors.
 
-## 支持模型
+##### Audio Input
 
-服务不做模型别名转换，`model` 字段会原样透传给 DashScope；内部只按模型名前缀选择对应 endpoint 和请求结构。
+- WebSocket input supports only the 24000 Hz mono PCM16 format described above, not G.711.
+- Realtime audio totals are not subject to the non-realtime Base64 10 MiB or URL 2 GiB limits; the file endpoint remains subject to `MAX_UPLOAD_MB`.
+- The Qwen upstream non-VAD limit for a single Base64 `append.audio` value is 15 MiB. The service actually splits audio into PCM chunks of at most 3200 bytes and checks their encoded size; client messages remain subject to the 1 MiB limit below.
 
-| 模型前缀 | 示例模型名 | 调用方式 |
+##### Session Configuration
+
+- Partial updates are supported. During audio input, only `prompt` can be updated, and only on models supporting context. Commit or clear before changing the model, language, or turn detection settings.
+- `prompt` is limited to 400 characters and supported only by `qwen-audio-3.0-asr-flash-streaming`, `fun-asr-realtime`, and `fun-asr-realtime-2025-11-07`. Other models reject nonempty prompts.
+
+##### Capacity and Concurrency Limits
+
+| Object | Limit |
+|---|---|
+| Single client JSON message (including Base64 text and JSON fields) | 1 MiB |
+| Unfinished upstream tasks per session (including the current input task) | 4 |
+| Cumulative text per manually committed Fun-ASR / Paraformer turn | 1 MiB |
+| Text per Qwen-ASR item | 1 MiB |
+| Full realtime file transcript | 8 MiB |
+| Total items processed per Qwen upstream connection | 4096 |
+| Concurrent unfinished items per Qwen upstream connection | 64, with at most 8 MiB of confirmed text in total |
+| Results buffered per subsequent task while waiting for the previous Qwen VAD tail | 64 events, 8 MiB of text |
+
+When the upstream task concurrency limit is reached, wait for tasks to finish and resend the rejected audio. For long Qwen sessions, use `commit` to end the current upstream connection and continue with the next turn. While waiting for the previous turn's tail, adjacent confirmed-prefix updates for the same item are coalesced. Exceeding buffer limits returns an error rather than allowing unbounded buffering.
+
+##### Errors and Disconnections
+
+- Upstream connection or protocol failure: sends an error event and closes the session without automatic reconnection or audio replay. Committed but unfinished items also receive `conversation.item.input_audio_transcription.failed`.
+- Qwen single-item recognition failure: returns `failed` only for that item, without reporting success. Other items and the client session can continue.
+- Client disconnection: cancels all unfinished tasks.
+
+Interface structures follow [OpenAI file transcription](https://developers.openai.com/api/docs/guides/speech-to-text) and [OpenAI Realtime transcription](https://developers.openai.com/api/docs/guides/realtime-transcription). Compatibility is limited to the implementation described above.
+
+## Supported Models
+
+The service does not translate model aliases. It passes `model` unchanged to DashScope and uses model-name prefixes only to select the endpoint and request structure.
+
+| Model prefix | Example model names | Invocation |
 |---|---|---|
-| `qwen3-asr-flash-realtime*` | `qwen3-asr-flash-realtime`、`qwen3-asr-flash-realtime-2026-02-10`、`qwen3-asr-flash-realtime-2025-10-27` | WebSocket 实时识别，Base64 PCM 音频事件，上游使用 16000 Hz |
-| `qwen-audio-3.0-asr-flash-streaming*` | `qwen-audio-3.0-asr-flash-streaming` | WebSocket 实时识别，二进制 PCM 音频 |
-| `fun-asr-realtime*` | `fun-asr-realtime`、`fun-asr-realtime-2025-11-07`、`fun-asr-realtime-2026-02-28`、`fun-asr-realtime-2025-09-15` | WebSocket 实时识别，二进制 PCM 音频 |
-| `fun-asr-flash-8k-realtime*` | `fun-asr-flash-8k-realtime`、`fun-asr-flash-8k-realtime-2026-01-28` | WebSocket 实时识别，上游固定 8000 Hz |
-| `paraformer-realtime-v2*` | `paraformer-realtime-v2` | WebSocket 实时识别，二进制 PCM，上游使用 24000 Hz |
-| `paraformer-realtime-v1*` | `paraformer-realtime-v1` | WebSocket 实时识别，上游固定 16000 Hz |
-| `paraformer-realtime-8k-v2*` / `paraformer-realtime-8k-v1*` | `paraformer-realtime-8k-v2`、`paraformer-realtime-8k-v1` | WebSocket 实时识别，上游固定 8000 Hz |
-| `qwen-audio-3.0-asr-flash-filetrans*` | `qwen-audio-3.0-asr-flash-filetrans` | `POST /services/audio/asr/transcription` 异步任务，使用 URL，轮询 `/tasks/<task_id>` |
-| `qwen-audio-3.0-asr-flash*` | `qwen-audio-3.0-asr-flash` | `POST /services/aigc/multimodal-generation/generation`，`input_audio` 请求结构 |
-| `qwen3-asr-flash*` | `qwen3-asr-flash`、`qwen3-asr-flash-2025-09-08` | `POST /services/aigc/multimodal-generation/generation`，Qwen3 ASR multimodal 请求结构 |
-| `fun-asr-flash*` | `fun-asr-flash-2026-06-15` | `POST /services/aigc/multimodal-generation/generation`，`input_audio` 请求结构 |
-| `fun-asr*` | `fun-asr`、`fun-asr-2025-11-07`、`fun-asr-mtl` | `POST /services/audio/asr/transcription` 异步任务，使用 URL，轮询 `/tasks/<task_id>` |
-| `paraformer*` | `paraformer-v2`、`paraformer-v1` 等 Paraformer 全量模型名 | `POST /services/audio/asr/transcription` 异步任务，轮询 `/tasks/<task_id>` |
+| `qwen3-asr-flash-realtime*` | `qwen3-asr-flash-realtime`, `qwen3-asr-flash-realtime-2026-02-10`, `qwen3-asr-flash-realtime-2025-10-27` | Realtime WebSocket recognition, Base64 PCM audio events, 16000 Hz upstream |
+| `qwen-audio-3.0-asr-flash-streaming*` | `qwen-audio-3.0-asr-flash-streaming` | Realtime WebSocket recognition, binary PCM audio |
+| `fun-asr-realtime*` | `fun-asr-realtime`, `fun-asr-realtime-2025-11-07`, `fun-asr-realtime-2026-02-28`, `fun-asr-realtime-2025-09-15` | Realtime WebSocket recognition, binary PCM audio |
+| `fun-asr-flash-8k-realtime*` | `fun-asr-flash-8k-realtime`, `fun-asr-flash-8k-realtime-2026-01-28` | Realtime WebSocket recognition, fixed 8000 Hz upstream |
+| `paraformer-realtime-v2*` | `paraformer-realtime-v2` | Realtime WebSocket recognition, binary PCM, 24000 Hz upstream |
+| `paraformer-realtime-v1*` | `paraformer-realtime-v1` | Realtime WebSocket recognition, fixed 16000 Hz upstream |
+| `paraformer-realtime-8k-v2*` / `paraformer-realtime-8k-v1*` | `paraformer-realtime-8k-v2`, `paraformer-realtime-8k-v1` | Realtime WebSocket recognition, fixed 8000 Hz upstream |
+| `qwen-audio-3.0-asr-flash-filetrans*` | `qwen-audio-3.0-asr-flash-filetrans` | `POST /services/audio/asr/transcription`, asynchronous URL-based task, polling `/tasks/<task_id>` |
+| `qwen-audio-3.0-asr-flash*` | `qwen-audio-3.0-asr-flash` | `POST /services/aigc/multimodal-generation/generation`, `input_audio` request structure |
+| `qwen3-asr-flash*` | `qwen3-asr-flash`, `qwen3-asr-flash-2025-09-08` | `POST /services/aigc/multimodal-generation/generation`, Qwen3 ASR multimodal request structure |
+| `fun-asr-flash*` | `fun-asr-flash-2026-06-15` | `POST /services/aigc/multimodal-generation/generation`, `input_audio` request structure |
+| `fun-asr*` | `fun-asr`, `fun-asr-2025-11-07`, `fun-asr-mtl` | `POST /services/audio/asr/transcription`, asynchronous URL-based task, polling `/tasks/<task_id>` |
+| `paraformer*` | Full Paraformer model names such as `paraformer-v2` and `paraformer-v1` | `POST /services/audio/asr/transcription`, asynchronous task, polling `/tasks/<task_id>` |
 
-需要使用带日期或版本后缀的模型时，直接传完整模型名即可，例如 `qwen3-asr-flash-2025-09-08` 或 `fun-asr-flash-2026-06-15`。
+To use a dated or versioned model, pass its full name, such as `qwen3-asr-flash-2025-09-08` or `fun-asr-flash-2026-06-15`.
 
-实时前缀优先于非实时 Flash / Fun-ASR / Paraformer 前缀匹配。`GET /v1/models` 返回已声明的型号；前缀路由不代表上游一定提供某个任意拼接的版本，具体可用性仍由所选地域和百炼账号决定。
+Realtime prefixes are matched before non-realtime Flash / Fun-ASR / Paraformer prefixes. `GET /v1/models` returns declared models. Prefix routing does not imply that any arbitrarily constructed version exists upstream; availability depends on the selected region and Alibaba Cloud Model Studio account.
 
-Fun-ASR 协议的实时 `language` 映射为单元素 `language_hints`。普通型号支持 `zh en ja ko vi th id ms tl hi ar fr de es pt ru it nl sv da fi no el pl cs hu ro bg hr sk`；`fun-asr-realtime-2026-02-28` 仅支持 `zh en ja`，`fun-asr-realtime-2025-09-15` 仅支持 `zh en`，8k 实时型号仅支持 `zh`。
+The Fun-ASR realtime protocol maps `language` to a single-element `language_hints` array. Standard models support `zh en ja ko vi th id ms tl hi ar fr de es pt ru it nl sv da fi no el pl cs hu ro bg hr sk`; `fun-asr-realtime-2026-02-28` supports only `zh en ja`, `fun-asr-realtime-2025-09-15` only `zh en`, and 8k realtime models only `zh`.
 
-Qwen-ASR 协议映射为 `session.input_audio_transcription.language`，支持 `zh yue en ja de ko ru fr pt ar it es hi id th tr uk vi cs da fil fi is ms no pl sv`，不复用 Fun-ASR 的语种列表。省略语言时由上游自动识别。
+The Qwen-ASR protocol maps language to `session.input_audio_transcription.language` and supports `zh yue en ja de ko ru fr pt ar it es hi id th tr uk vi cs da fil fi is ms no pl sv`. It does not reuse the Fun-ASR language list. If omitted, the upstream service detects the language automatically.
 
-Paraformer 实时协议的 `language` 映射为单元素 `language_hints`，按文档校验 `zh en ja yue ko de fr ru`，省略时由上游自动识别。该系列仅支持华北 2（北京）地域。`paraformer-realtime-v2` 上游支持任意采样率，当前服务统一使用 24000 Hz；v1 和 8k 型号按表中固定采样率转换。
+The Paraformer realtime protocol maps `language` to a single-element `language_hints` array and validates the documented list: `zh en ja yue ko de fr ru`. If omitted, the upstream service detects the language automatically. This family is available only in China (Beijing). Although upstream `paraformer-realtime-v2` supports arbitrary sample rates, this service uses 24000 Hz; v1 and 8k models are converted to the fixed sample rates listed above.
 
-## 环境变量
+## Environment Variables
 
 ```bash
 API_TOKEN="sk-aaa,sk-bbb"
@@ -298,39 +353,69 @@ ASR_RETRY_FACTOR="2.0"
 ASR_RETRY_MAX_DELAY="8.0"
 ```
 
-如果使用百炼业务空间域名，将 `DASHSCOPE_HTTP_BASE_URL` 设置为 `https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/api/v1`。
-实时上游不会从 HTTP 地址推导。Fun-ASR 协议配置 `DASHSCOPE_WS_URL`，北京业务空间地址为 `wss://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference`，新加坡为 `wss://<WorkspaceId>.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/inference`。
-Paraformer 实时协议复用 `DASHSCOPE_WS_URL`，但仅支持北京地域；默认 `wss://dashscope.aliyuncs.com/api-ws/v1/inference` 仍可使用，不需要新增地址配置。
-Qwen-ASR 协议独立配置 `DASHSCOPE_QWEN_WS_URL`，同地域域名下的路径改为 `/api-ws/v1/realtime`，服务自动添加或覆盖 `model` 查询参数；两个 WebSocket 地址互不推导。密钥、业务空间与地域需匹配，可通过 `DASHSCOPE_WORKSPACE` 发送 `X-DashScope-WorkSpace` 请求头。
-`MAX_UPLOAD_MB` 控制单个上传音频文件大小上限，默认 `500`，也可用启动参数 `--max-upload-mb` 覆盖。
-非实时链路向 DashScope、OSS 和 WebDAV 发起的请求会优先协商 HTTP/2，但不复用 keep-alive 连接：每个请求都会新建并在完成后关闭其 TCP/TLS 连接。实时链路在一个上游任务期间保持 WebSocket 连接。
-`WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 必须同时设置才会启用 WebDAV；未同时设置时，URL 输入模型使用 DashScope SDK 的内置临时 OSS。该配置不影响直接使用 Base64 Data URI 的 Qwen3-ASR-Flash、Qwen-Audio-3.0-ASR-Flash（非 Filetrans）、Fun-ASR-Flash。`WEBDAV_CREDENTIALS` 格式为 `user@password`，密码可以包含额外的 `@`。存储链路的工作方式、部署要求和取舍见下方“音频分片存储”。
+### Upstream Endpoints and Connections
 
-非实时 ASR 分片会统一输出为 `ogg` 容器和 `libopus` 编码，因此不会再按原始文件扩展名做模型格式白名单校验。采样率按模型路由归一化：`paraformer-8k*` 使用 `8000Hz`，其他非实时模型使用 `16000Hz`；`OUTPUT_BITRATE` / `--output-bitrate` 控制 Opus 码率，默认 `128k`。
-`SEGMENT_WORKERS` / `--segment-workers` 控制 ASR 分片导出和编码并发数，`0` 表示由预处理库按 CPU 自动选择；`LIBAV_CODEC_THREADS` / `--libav-codec-threads` 控制每条 libav pipeline 的 decoder/encoder 线程数，`0` 表示使用 libav 默认策略。显式调大时需要同时考虑 `FFMPEG_WORKS`，避免 Go worker 和 libav codec 线程叠加后过量并发。
-`SKIP_TRIM` / `--skip-trim` 默认为 `false`。设置为 `true`（也可使用 `1`）时，跳过固定切片静音裁剪和合并，统一转 WAV 后直接调用预处理库完成静音区间分片。非实时模型的 `stream=true` 请求强制启用此行为；`stream=false` 或省略时仍遵循服务配置。实时模型的处理链路不受此配置影响。
-`ENABLE_LID` / `enable_lid` 仅作为兼容配置保留，当前支持的模型不会将其传给上游。`ENABLE_ITN` 控制请求未显式传入 `enable_itn` 时的默认值；请求字段一旦传入，会覆盖服务配置默认值。
-生产部署建议用环境变量传入 `API_TOKEN` 和 `DASHSCOPE_API_KEY`，避免密钥出现在进程命令行里；本地测试也可以使用 `--api-token` 和 `--dashscope-api-key`。
+The HTTP endpoint and the two WebSocket endpoints are configured independently; none is derived from another. For Model Studio workspace domains, replace `<WorkspaceId>` with the actual workspace ID:
 
-配置作用域：
-
-| 作用域 | 配置 |
+| Setting | Purpose and workspace endpoint |
 |---|---|
-| 通用 | `LISTEN`、`API_TOKEN`、`DASHSCOPE_API_KEY`；`MAX_UPLOAD_MB` 作用于文件上传入口 |
-| 非实时 | `DASHSCOPE_HTTP_BASE_URL`、`WEBDAV_URL`、`WEBDAV_CREDENTIALS`、`UPSTREAM_TIMEOUT_SECONDS`、`API_CONCURRENCY` |
-| 非实时音频处理 | `API_SEGMENT_LENGTH`、`FFMPEG_SEGMENT_LENGTH`、`FFMPEG_WORKS`、`SKIP_TRIM`、`SEGMENT_WORKERS`、`LIBAV_CODEC_THREADS`、`SILENT_INTERVAL`、`PADDING_LENGTH`、`OUTPUT_BITRATE` |
-| 非实时识别选项 | `ENABLE_LID`、`ENABLE_ITN`、全部 `ASR_RETRY_*`；实时模式不读取这些选项 |
-| 实时 | `DASHSCOPE_WS_URL`（Fun-ASR / Paraformer 协议）、`DASHSCOPE_QWEN_WS_URL`（Qwen-ASR 协议）、`DASHSCOPE_WORKSPACE`、全部 `REALTIME_*` |
+| `DASHSCOPE_HTTP_BASE_URL` | Non-realtime HTTP; Beijing: `https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/api/v1` |
+| `DASHSCOPE_WS_URL` | Fun-ASR / Paraformer realtime protocols; Beijing: `wss://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference`; Singapore: `wss://<WorkspaceId>.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/inference` (Fun-ASR only) |
+| `DASHSCOPE_QWEN_WS_URL` | Qwen-ASR realtime protocol; use the corresponding regional domain with `/api-ws/v1/realtime`. The service adds or overrides the `model` query parameter |
 
-`REALTIME_CONCURRENCY` 同时限制实时文件请求和客户端 WebSocket 会话数，超出返回 HTTP 429，不排队。一个 WebSocket 会话最多对应 4 个尚未结束的上游任务。实时超时分别限制握手、启动等待、结束等待和单次写入，不作为整场录音的总时限；`REALTIME_IDLE_TIMEOUT_SECONDS` 限制客户端 WebSocket 连续未发送消息的时间。
+- Paraformer realtime is available only in Beijing and reuses `DASHSCOPE_WS_URL`. The default `wss://dashscope.aliyuncs.com/api-ws/v1/inference` remains usable.
+- The key, workspace, and region must match. `DASHSCOPE_WORKSPACE` supplies the `X-DashScope-WorkSpace` header for realtime upstream requests.
+- Non-realtime requests to DashScope, OSS, and WebDAV prefer HTTP/2 but do not reuse keep-alive connections: each request opens a new TCP/TLS connection and closes it on completion. Realtime connections remain open for the duration of an upstream task.
 
-非实时重试参数及预处理并发参数的范围检查在非实时请求执行时进行，不阻止仅使用实时识别的服务启动。命令行参数本身的类型和语法错误仍在启动时返回。
+### Uploads and Storage
 
-## 本地构建
+- `MAX_UPLOAD_MB` limits the size of each uploaded audio file. It defaults to `500` MiB and can be overridden with `--max-upload-mb`.
+- WebDAV is enabled only when both `WEBDAV_URL` and `WEBDAV_CREDENTIALS` are set. Otherwise, URL-input models use the DashScope SDK's built-in temporary OSS flow.
+- `WEBDAV_CREDENTIALS` uses the format `user@password`; the password may contain additional `@` characters.
+- WebDAV settings do not affect Qwen3-ASR-Flash, Qwen-Audio-3.0-ASR-Flash (excluding Filetrans), or Fun-ASR-Flash, which use Base64 Data URIs directly.
 
-实时文件接口需要系统 `PATH` 中提供 `ffmpeg`。持续 PCM 的 WebSocket 入口不依赖 FFmpeg 可执行文件；8k 和 16k 重采样在 Go 中完成。
+See [Audio Segment Storage and Uploads](#audio-segment-storage-and-uploads) for storage behavior and deployment requirements.
 
-预处理库需要 `libav` build tag，并且需要 FFmpeg/libav 静态依赖。项目脚本会委托当前 `go.mod` 中 `github.com/Joey-Kot/ASR-Audio-Preprocess` 依赖包提供的构建脚本：
+### Non-Realtime Audio Processing
+
+ASR segments use the `ogg` container and `libopus` codec. The service does not validate model format allowlists against the original file extension. `paraformer-8k*` uses 8000 Hz; other non-realtime models use 16000 Hz.
+
+| Setting | Purpose and default behavior |
+|---|---|
+| `OUTPUT_BITRATE` / `--output-bitrate` | Opus bitrate; defaults to `128k` |
+| `SEGMENT_WORKERS` / `--segment-workers` | ASR segment export and encoding concurrency; `0` lets the preprocessing library choose based on CPU count |
+| `LIBAV_CODEC_THREADS` / `--libav-codec-threads` | Decoder/encoder threads per libav pipeline; `0` uses libav defaults |
+| `SKIP_TRIM` / `--skip-trim` | Defaults to `false`; `true` or `1` skips fixed-slice silence trimming and merging, splitting at silence intervals directly after conversion to WAV |
+
+When increasing concurrency or thread counts, also account for `FFMPEG_WORKS` to avoid excessive combined Go worker and libav codec parallelism.
+
+Non-realtime requests with `stream=true` always skip trimming and merging. With `stream=false` or an omitted value, `SKIP_TRIM` applies. Realtime processing is unaffected by this setting.
+
+### Recognition Options and Authentication
+
+- `ENABLE_LID` / `enable_lid` is retained only for compatibility; currently supported models do not forward it upstream.
+- `ENABLE_ITN` provides the default for non-realtime requests that omit `enable_itn`. An explicit request field overrides the service default.
+- In production, pass `API_TOKEN` and `DASHSCOPE_API_KEY` through environment variables to keep keys out of command lines. For local testing, `--api-token` and `--dashscope-api-key` are also supported.
+
+### Configuration Scope
+
+| Scope | Settings |
+|---|---|
+| Common | `LISTEN`, `API_TOKEN`, `DASHSCOPE_API_KEY`; `MAX_UPLOAD_MB` applies to file uploads |
+| Non-realtime | `DASHSCOPE_HTTP_BASE_URL`, `WEBDAV_URL`, `WEBDAV_CREDENTIALS`, `UPSTREAM_TIMEOUT_SECONDS`, `API_CONCURRENCY` |
+| Non-realtime audio processing | `API_SEGMENT_LENGTH`, `FFMPEG_SEGMENT_LENGTH`, `FFMPEG_WORKS`, `SKIP_TRIM`, `SEGMENT_WORKERS`, `LIBAV_CODEC_THREADS`, `SILENT_INTERVAL`, `PADDING_LENGTH`, `OUTPUT_BITRATE` |
+| Non-realtime recognition options | `ENABLE_LID`, `ENABLE_ITN`, all `ASR_RETRY_*`; realtime mode does not read these options |
+| Realtime | `DASHSCOPE_WS_URL` (Fun-ASR / Paraformer protocols), `DASHSCOPE_QWEN_WS_URL` (Qwen-ASR protocol), `DASHSCOPE_WORKSPACE`, all `REALTIME_*` |
+
+`REALTIME_CONCURRENCY` jointly limits realtime file requests and client WebSocket sessions. Excess requests receive HTTP 429 rather than being queued. A WebSocket session can have at most 4 unfinished upstream tasks. Realtime timeouts cover the handshake, startup wait, finish wait, and individual writes, not the total recording duration. `REALTIME_IDLE_TIMEOUT_SECONDS` limits how long a client WebSocket can remain idle without sending a message.
+
+Range validation for non-realtime retry and preprocessing concurrency settings occurs when non-realtime requests run, so it does not prevent a realtime-only service from starting. Invalid command-line types or syntax still fail at startup.
+
+## Building Locally
+
+The realtime file endpoint requires `ffmpeg` on the system `PATH`. The continuous-PCM WebSocket endpoint does not require the FFmpeg executable; 8k and 16k resampling is implemented in Go.
+
+The preprocessing library requires the `libav` build tag and static FFmpeg/libav dependencies. The project script delegates to the build script provided by the `github.com/Joey-Kot/ASR-Audio-Preprocess` version in `go.mod`:
 
 ```bash
 ./scripts/bootstrap-static-audio-deps.sh
@@ -341,7 +426,7 @@ PKG_CONFIG="pkg-config --static" \
 go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-static'" -o qwen-stt-compatible ./cmd/server
 ```
 
-完整启动参数示例：
+Complete startup example:
 
 ```bash
 ./qwen-stt-compatible \
@@ -371,7 +456,7 @@ go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-
   --asr-retry-max-delay 8s
 ```
 
-生产部署建议把 token 放到环境变量，避免密钥出现在进程命令行：
+In production, keep tokens in environment variables to avoid exposing keys in command lines:
 
 ```bash
 API_TOKEN="sk-aaa,sk-bbb" \
@@ -404,170 +489,130 @@ ENABLE_ITN="false" \
   --asr-retry-max-delay 8s
 ```
 
-启动参数参考：
+Command-line options:
 
-| 参数 | 默认值 | 对应环境变量 | 说明 |
+| Option | Default | Environment variable | Description |
 |---|---:|---|---|
-| `--listen` | `:8080` | `LISTEN` | HTTP 监听地址 |
-| `--api-token` | 空 | `API_TOKEN` | 兼容接口鉴权 token，多个 token 用逗号分隔 |
-| `--dashscope-api-key` | 空 | `DASHSCOPE_API_KEY` | DashScope API Key |
+| `--listen` | `:8080` | `LISTEN` | HTTP listen address |
+| `--api-token` | Empty | `API_TOKEN` | Authentication tokens for the compatible API, separated by commas |
+| `--dashscope-api-key` | Empty | `DASHSCOPE_API_KEY` | DashScope API Key |
 | `--dashscope-base-url` | `https://dashscope.aliyuncs.com/api/v1` | `DASHSCOPE_HTTP_BASE_URL` | DashScope HTTP API base URL |
-| `--dashscope-ws-url` | `wss://dashscope.aliyuncs.com/api-ws/v1/inference` | `DASHSCOPE_WS_URL` | Fun-ASR / Paraformer 协议上游 WebSocket 地址，与 HTTP 地址独立 |
-| `--dashscope-qwen-ws-url` | `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` | `DASHSCOPE_QWEN_WS_URL` | Qwen-ASR 协议上游 WebSocket 地址，自动附加模型查询参数 |
-| `--dashscope-workspace` | 空 | `DASHSCOPE_WORKSPACE` | 实时上游业务空间请求头 |
-| `--realtime-concurrency` | `10` | `REALTIME_CONCURRENCY` | 实时文件请求和 WebSocket 会话并发数，超出返回 429 |
-| `--realtime-connect-timeout` | `10s` | `REALTIME_CONNECT_TIMEOUT_SECONDS` | 实时上游握手超时 |
-| `--realtime-start-timeout` | `10s` | `REALTIME_START_TIMEOUT_SECONDS` | 等待 `task-started` 或 Qwen 会话创建及更新确认的超时 |
-| `--realtime-finish-timeout` | `30s` | `REALTIME_FINISH_TIMEOUT_SECONDS` | 等待 `task-finished` 或 `session.finished` 的超时 |
-| `--realtime-write-timeout` | `10s` | `REALTIME_WRITE_TIMEOUT_SECONDS` | 实时上游和客户端单次写入超时 |
-| `--realtime-idle-timeout` | `120s` | `REALTIME_IDLE_TIMEOUT_SECONDS` | 客户端 WebSocket 无消息输入超时 |
-| `--webdav-url` | 空 | `WEBDAV_URL` | 公网 HTTPS WebDAV 基础地址；与用户名密码同时设置时启用 |
-| `--webdav-credentials` | 空 | `WEBDAV_CREDENTIALS` | WebDAV 用户名密码，格式 `user@password`；建议仅通过环境变量传入 |
-| `--max-upload-mb` | `500` | `MAX_UPLOAD_MB` | 单个上传音频文件大小上限，单位 MiB |
-| `--upstream-timeout` | `30s` | `UPSTREAM_TIMEOUT_SECONDS` | 非实时 DashScope HTTP 请求超时时间 |
-| `--api-concurrency` | `10` | `API_CONCURRENCY` | 非实时 ASR 上游并发请求数，超出后排队 |
-| `--api-segment-length` | `175s` | `API_SEGMENT_LENGTH` | 单个 ASR 分片最大时长 |
-| `--fixed-slice-length` | `5s` | `FFMPEG_SEGMENT_LENGTH` | 固定分片静音裁剪的切片长度 |
-| `--fixed-slice-workers` | `16` | `FFMPEG_WORKS` | 固定分片静音裁剪并发数 |
-| `--skip-trim` | `false` | `SKIP_TRIM` | 跳过固定分片静音裁剪和合并，统一转码后直接按静音区间分片；支持 `0/1` 或 `true/false`；非实时 `stream=true` 请求强制启用 |
-| `--segment-workers` | `0` | `SEGMENT_WORKERS` | ASR 分片导出和编码并发数，`0` 表示按 CPU 自动选择 |
-| `--libav-codec-threads` | `0` | `LIBAV_CODEC_THREADS` | 单个 libav pipeline 的 decoder/encoder 线程数，`0` 表示 libav 默认策略 |
-| `--silent-interval` | `700ms` | `SILENT_INTERVAL` | 最短静音判定时长 |
-| `--padding` | `100ms` | `PADDING_LENGTH` | 非静音片段前后保留时长 |
-| `--output-bitrate` | `128k` | `OUTPUT_BITRATE` | ASR 分片输出音频码率 |
-| `--enable-lid` | `true` | `ENABLE_LID` | 兼容配置，当前支持的模型不会将其传给上游 |
-| `--enable-itn` | `false` | `ENABLE_ITN` | 请求未传 `enable_itn` 时的默认值，支持 `0/1` 或 `true/false` |
-| `--asr-retry-max-attempts` | `4` | `ASR_RETRY_MAX_ATTEMPTS` | ASR 调用最大尝试次数 |
-| `--asr-retry-initial-delay` | `500ms` | `ASR_RETRY_INITIAL_DELAY` | ASR 重试初始等待时间 |
-| `--asr-retry-factor` | `2.0` | `ASR_RETRY_FACTOR` | ASR 重试指数退避倍数 |
-| `--asr-retry-max-delay` | `8s` | `ASR_RETRY_MAX_DELAY` | ASR 重试最大等待时间 |
+| `--dashscope-ws-url` | `wss://dashscope.aliyuncs.com/api-ws/v1/inference` | `DASHSCOPE_WS_URL` | Fun-ASR / Paraformer upstream WebSocket URL, independent of the HTTP URL |
+| `--dashscope-qwen-ws-url` | `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` | `DASHSCOPE_QWEN_WS_URL` | Qwen-ASR upstream WebSocket URL; the model query parameter is added automatically |
+| `--dashscope-workspace` | Empty | `DASHSCOPE_WORKSPACE` | Workspace header for realtime upstream requests |
+| `--realtime-concurrency` | `10` | `REALTIME_CONCURRENCY` | Concurrent realtime file requests and WebSocket sessions; excess requests receive 429 |
+| `--realtime-connect-timeout` | `10s` | `REALTIME_CONNECT_TIMEOUT_SECONDS` | Realtime upstream handshake timeout |
+| `--realtime-start-timeout` | `10s` | `REALTIME_START_TIMEOUT_SECONDS` | Timeout waiting for `task-started` or Qwen session creation and update acknowledgment |
+| `--realtime-finish-timeout` | `30s` | `REALTIME_FINISH_TIMEOUT_SECONDS` | Timeout waiting for `task-finished` or `session.finished` |
+| `--realtime-write-timeout` | `10s` | `REALTIME_WRITE_TIMEOUT_SECONDS` | Timeout for each upstream or client write in realtime mode |
+| `--realtime-idle-timeout` | `120s` | `REALTIME_IDLE_TIMEOUT_SECONDS` | Client WebSocket inactivity timeout |
+| `--webdav-url` | Empty | `WEBDAV_URL` | Public HTTPS WebDAV base URL; enabled when credentials are also set |
+| `--webdav-credentials` | Empty | `WEBDAV_CREDENTIALS` | WebDAV credentials in `user@password` format; preferably passed only through environment variables |
+| `--max-upload-mb` | `500` | `MAX_UPLOAD_MB` | Maximum size per uploaded audio file, in MiB |
+| `--upstream-timeout` | `30s` | `UPSTREAM_TIMEOUT_SECONDS` | Non-realtime DashScope HTTP request timeout |
+| `--api-concurrency` | `10` | `API_CONCURRENCY` | Concurrent non-realtime upstream ASR requests; excess requests are queued |
+| `--api-segment-length` | `175s` | `API_SEGMENT_LENGTH` | Maximum ASR segment duration |
+| `--fixed-slice-length` | `5s` | `FFMPEG_SEGMENT_LENGTH` | Fixed slice length for silence trimming |
+| `--fixed-slice-workers` | `16` | `FFMPEG_WORKS` | Fixed-slice silence trimming concurrency |
+| `--skip-trim` | `false` | `SKIP_TRIM` | Skip fixed-slice silence trimming and merging, splitting at silence intervals directly after transcoding; accepts `0/1` or `true/false`; forced on for non-realtime `stream=true` requests |
+| `--segment-workers` | `0` | `SEGMENT_WORKERS` | ASR segment export and encoding concurrency; `0` selects based on CPU count |
+| `--libav-codec-threads` | `0` | `LIBAV_CODEC_THREADS` | Decoder/encoder threads per libav pipeline; `0` uses libav defaults |
+| `--silent-interval` | `700ms` | `SILENT_INTERVAL` | Minimum silence duration |
+| `--padding` | `100ms` | `PADDING_LENGTH` | Padding retained before and after non-silent intervals |
+| `--output-bitrate` | `128k` | `OUTPUT_BITRATE` | Output bitrate for ASR audio segments |
+| `--enable-lid` | `true` | `ENABLE_LID` | Compatibility setting; currently supported models do not forward it upstream |
+| `--enable-itn` | `false` | `ENABLE_ITN` | Default when the request omits `enable_itn`; accepts `0/1` or `true/false` |
+| `--asr-retry-max-attempts` | `4` | `ASR_RETRY_MAX_ATTEMPTS` | Maximum ASR call attempts |
+| `--asr-retry-initial-delay` | `500ms` | `ASR_RETRY_INITIAL_DELAY` | Initial delay before an ASR retry |
+| `--asr-retry-factor` | `2.0` | `ASR_RETRY_FACTOR` | Exponential backoff factor for ASR retries |
+| `--asr-retry-max-delay` | `8s` | `ASR_RETRY_MAX_DELAY` | Maximum delay before an ASR retry |
 
 Release packages include the executable, `README.md`, `LICENSE`, `NOTICE`,
 `THIRD_PARTY_NOTICES.md`, and the complete third-party license texts in
 `THIRD_PARTY_LICENSES/`.
 
-## 运行日志与临时文件
+## Logs and Temporary Files
 
-服务启动后会自动清理系统临时目录下的历史请求目录：
+On startup, the service removes historical request directories under the system temporary directory:
 
 ```text
-<系统临时目录>/qwen-stt-compatible/<request_id>
+<system-temp-dir>/qwen-stt-compatible/<request_id>
 ```
 
-正常请求结束时，也会删除本次请求的临时目录。
+Each request's temporary directory is also removed when the request ends normally.
 
-每次转写请求会输出请求基础信息，不包含 API token、DashScope API Key 或音频内容：
+Each transcription request logs basic request information, without API tokens, DashScope API keys, or audio content:
 
 ```text
 request=<request_id> endpoint=/v1/audio/transcriptions file=<filename> model=<model> language=<language> enable_lid=<bool> enable_itn=<bool>
 ```
 
-实时文件请求改为记录 `mode=realtime` 和上游 `sample_rate`，不输出分片、裁剪日志；WebSocket 会话记录 `session=<session_id>` 的连接和关闭事件。实时 PCM 数据通过管道或内存传输，不生成 Ogg 分片，也不上传 OSS / WebDAV。
+Realtime file requests instead log `mode=realtime` and the upstream `sample_rate`, without segment or trimming logs. WebSocket sessions log connection and close events with `session=<session_id>`. Realtime PCM is passed through pipes or memory, without creating Ogg segments or uploading to OSS / WebDAV.
 
-非实时非流式请求在 `SKIP_TRIM=false` 时，固定切片静音裁剪成功会输出：
-
-```text
-fixed trim input_duration=<音频文件原始长度> fixed_slice_length=<固定切片长度> slices=<成功切片数量> trimmed_slices=<检测到静音并进行了裁剪的切片数量>
-```
-
-默认模式生成 ASR 分片后会输出：
+For non-realtime, non-streaming requests with `SKIP_TRIM=false`, successful fixed-slice silence trimming logs:
 
 ```text
-segments merged_duration=<切片合并后音频长度> asr_segments=<并发 ASR 分片数量>
+fixed trim input_duration=<original-audio-duration> fixed_slice_length=<fixed-slice-length> slices=<successful-slice-count> trimmed_slices=<slices-with-silence-detected-and-trimmed>
 ```
 
-非实时请求配置 `SKIP_TRIM=true` 或请求 `stream=true` 时，不会输出固定裁剪日志，直接分片后会输出：
+After ASR segments are generated in the default mode:
 
 ```text
-segments skip_trim=true input_duration=<统一转码后音频长度> asr_segments=<并发 ASR 分片数量>
+segments merged_duration=<merged-audio-duration> asr_segments=<concurrent-asr-segment-count>
 ```
 
-## Docker
+For non-realtime requests with `SKIP_TRIM=true` or `stream=true`, fixed-trimming logs are omitted. Direct segmentation logs:
 
-镜像包含实时文件解码所需的 FFmpeg。使用反向代理时，文件 SSE 需关闭响应缓冲；`/v1/realtime` 需转发 WebSocket Upgrade 请求头，并设置适合长连接的代理超时。
-
-```bash
-docker build -t qwen-stt-compatible:latest .
-docker run -d \
-  -p 8888:8080 \
-  --name qwen-stt-compatible \
-  --restart always \
-  -e API_TOKEN="sk-aaa,sk-bbb" \
-  -e DASHSCOPE_API_KEY="sk-xxx" \
-  -e DASHSCOPE_HTTP_BASE_URL="https://dashscope.aliyuncs.com/api/v1" \
-  -e DASHSCOPE_WS_URL="wss://dashscope.aliyuncs.com/api-ws/v1/inference" \
-  -e DASHSCOPE_QWEN_WS_URL="wss://dashscope.aliyuncs.com/api-ws/v1/realtime" \
-  -e REALTIME_CONCURRENCY="10" \
-  -e WEBDAV_URL="https://files.example.com/dav/asr" \
-  -e WEBDAV_CREDENTIALS="user@password" \
-  -e LISTEN=":8080" \
-  -e MAX_UPLOAD_MB="500" \
-  -e UPSTREAM_TIMEOUT_SECONDS="30" \
-  -e API_CONCURRENCY="10" \
-  -e API_SEGMENT_LENGTH="175" \
-  -e FFMPEG_WORKS="16" \
-  -e FFMPEG_SEGMENT_LENGTH="5" \
-  -e SKIP_TRIM="false" \
-  -e SEGMENT_WORKERS="0" \
-  -e LIBAV_CODEC_THREADS="0" \
-  -e SILENT_INTERVAL="700" \
-  -e PADDING_LENGTH="100" \
-  -e OUTPUT_BITRATE="128k" \
-  -e ENABLE_LID="true" \
-  -e ENABLE_ITN="false" \
-  -e ASR_RETRY_MAX_ATTEMPTS="3" \
-  -e ASR_RETRY_INITIAL_DELAY="0.5" \
-  -e ASR_RETRY_FACTOR="2.0" \
-  -e ASR_RETRY_MAX_DELAY="8.0" \
-  qwen-stt-compatible:latest
+```text
+segments skip_trim=true input_duration=<transcoded-audio-duration> asr_segments=<concurrent-asr-segment-count>
 ```
 
-## 音频分片存储与上传
+## Audio Segment Storage and Uploads
 
-本节仅适用于非实时模型。转写前，服务会将处理后的音频切成 `ogg + Opus` ASR 分片。Qwen3-ASR-Flash、Qwen-Audio-3.0-ASR-Flash、Fun-ASR-Flash 的分片会编码为 Base64 Data URI，编码后不得超过 10 MiB；Qwen-Audio-3.0-ASR-Flash-Filetrans、Fun-ASR、Paraformer 的分片通过 DashScope 临时 OSS 或自建 WebDAV URL 提供给百炼，文件不得超过 2 GiB。大小超限直接返回错误，不进入识别重试。
+This section applies only to non-realtime models. Before transcription, the service splits processed audio into `ogg + Opus` ASR segments. Segments for Qwen3-ASR-Flash, Qwen-Audio-3.0-ASR-Flash, and Fun-ASR-Flash are encoded as Base64 Data URIs and must not exceed 10 MiB after encoding. Segments for Qwen-Audio-3.0-ASR-Flash-Filetrans, Fun-ASR, and Paraformer are provided to Model Studio through DashScope temporary OSS or self-hosted WebDAV URLs, with a 2 GiB file limit. Oversized segments return an error directly, without recognition retries.
 
-### 推荐：内存盘模式
+### Recommended: RAM Disk
 
-推荐将 `/tmp` 挂载为内存盘（tmpfs），让音频预处理和分片产生的临时文件直接写入内存。容量按并发数、音频时长和文件大小上限分配，例如分配 `8G`：
+Mounting `/tmp` as a RAM disk (tmpfs) is recommended so that temporary preprocessing and segment files are written directly to memory. Size it according to concurrency, audio duration, and the upload limit, for example `8G`:
 
 ```bash
 sudo mount -t tmpfs -o size=8G,mode=1777 tmpfs /tmp
 ```
 
-内存盘避免了临时分片反复写入 SSD 造成的写放大和损耗；本机上的临时数据只在内存、用户态和内核态之间流转，能显著缩短分片读写时间。
+A RAM disk avoids write amplification and SSD wear from repeatedly writing temporary segments. Local temporary data stays in memory, moving between user space and kernel space, which can substantially reduce segment I/O time.
 
-若同时使用自建 WebDAV，建议在转写服务所在主机的 `/etc/hosts` 中将 WebDAV 域名解析到本机，使分片上传走本机回环网络：
+When also using self-hosted WebDAV, map the WebDAV domain to the local machine in `/etc/hosts` on the transcription host so segment uploads use the loopback network:
 
 ```text
 127.0.0.1 files.example.com
 ```
 
-此时 `WEBDAV_URL` 仍使用公网域名（如 `https://files.example.com`）：本机服务会通过回环地址访问 Nginx 和 Dufs，而百炼仍通过该域名的公网解析拉取分片。
+Keep the public domain in `WEBDAV_URL`, such as `https://files.example.com`. The local service accesses Nginx and Dufs through loopback, while Model Studio fetches segments using the domain's public DNS resolution.
 
-### 默认：DashScope 临时 OSS
+### Default: DashScope Temporary OSS
 
-默认情况下，服务使用内置复刻 DashScope Python SDK 的临时 OSS 流程：
+By default, the service uses a built-in implementation of the DashScope Python SDK's temporary OSS flow:
 
-- 上传策略：`GET https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model=<model>`
-- OSS 上传：按策略字段 multipart 上传音频文件，返回 `oss://...`
-- 后续 DashScope 请求带 `X-DashScope-OssResourceResolve: enable`
+- Upload policy: `GET https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model=<model>`
+- OSS upload: multipart audio upload using the policy fields, returning `oss://...`
+- Subsequent DashScope requests include `X-DashScope-OssResourceResolve: enable`
 
-依赖内置 OSS 的策略申请和上传请求。请求频率或限流等因素可能造成偶发阻塞，进而让并发分片等待，拖慢甚至卡住整条转写管线。
+This depends on OSS policy and upload requests. Request frequency, rate limiting, or other factors can occasionally block progress, forcing concurrent segments to wait and slowing or stalling the transcription pipeline.
 
-### 推荐：自建 WebDAV
+### Recommended: Self-Hosted WebDAV
 
-同时配置 `WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 后，服务不再走临时 OSS，而是按以下方式处理每个分片：
+When both `WEBDAV_URL` and `WEBDAV_CREDENTIALS` are configured, the service replaces temporary OSS with the following flow for each segment:
 
-1. 服务以 Basic Auth 将分片 `PUT` 到自建 WebDAV。
-2. 服务将不含认证信息的 HTTPS 文件 URL 传给百炼。
-3. 百炼从该 URL 拉取分片并完成转写。
-4. 转写结束后，服务以 Basic Auth 删除对应的临时文件。
+1. The service uploads the segment to self-hosted WebDAV with `PUT` and Basic Auth.
+2. The service sends Model Studio an HTTPS file URL without authentication information.
+3. Model Studio fetches the segment from that URL and transcribes it.
+4. After transcription, the service deletes the temporary file using Basic Auth.
 
-WebDAV 应部署为百炼可访问的公网 HTTPS 服务。服务账号需要上传、下载和删除权限；由于百炼接收的是不带认证信息的 URL，分片 URL 在无鉴权时必须可读。
+WebDAV must be publicly accessible over HTTPS by Model Studio. The service account needs upload, download, and delete permissions. Because Model Studio receives a URL without credentials, segment URLs must allow unauthenticated reads.
 
-#### 使用 Dufs 搭建 WebDAV
+#### Setting Up WebDAV with Dufs
 
-推荐使用 [Dufs](https://github.com/sigoden/dufs) 启动 WebDAV 服务。下面的示例中，`username` 账号拥有根目录的读写权限，匿名用户仅用于读取；Dufs 仅监听本机 `127.0.0.1:6001`，分片保存在 `/tmp`：
+[Dufs](https://github.com/sigoden/dufs) is recommended for running WebDAV. In this example, `username` has read/write access to the root directory, while anonymous users have read-only access. Dufs listens only on `127.0.0.1:6001`, and segments are stored in `/tmp`:
 
 ```bash
 dufs \
@@ -587,14 +632,14 @@ dufs \
   /tmp
 ```
 
-再使用 Nginx 将 Dufs 服务反代至公网：
+Use Nginx to expose Dufs through a public reverse proxy:
 
 ```nginx
 server {
     listen 443 ssl;
     server_name files.example.com;
 
-    # 按常规方式配置 ssl_certificate 和 ssl_certificate_key。
+    # Configure ssl_certificate and ssl_certificate_key as usual.
     client_max_body_size 500m;
 
     location / {
@@ -607,20 +652,20 @@ server {
 }
 ```
 
-对应的服务配置如下：
+Corresponding service configuration:
 
 ```bash
 WEBDAV_URL="https://files.example.com"
 WEBDAV_CREDENTIALS="username@passwd"
 ```
 
-使用 WebDAV 即可绕过内置 OSS 的策略申请和上传环节，避免偶发限流使管线阻塞。将 WebDAV 部署在转写服务的同一设备上，分片写入通常更快；百炼直接从 WebDAV 拉取文件，可将原本两阶段请求的额外传输耗时压缩到接近一阶段请求的耗时。实际效果取决于 WebDAV 与转写服务、百炼之间的网络质量和带宽。
+WebDAV bypasses the built-in OSS policy and upload steps, avoiding pipeline stalls caused by occasional rate limiting. Hosting WebDAV on the same machine as the transcription service usually makes segment writes faster. Since Model Studio fetches directly from WebDAV, the extra transfer overhead of the two-stage request can approach that of a single stage. Actual performance depends on network quality and bandwidth between WebDAV, the transcription service, and Model Studio.
 
-## DashScope 请求说明
+## DashScope Request Details
 
 ### `qwen-audio-3.0-asr-flash-streaming*` / `fun-asr-realtime*` / `fun-asr-flash-8k-realtime*`
 
-连接 `DASHSCOPE_WS_URL`，握手时发送 `Authorization: Bearer <DASHSCOPE_API_KEY>`，可选发送 `X-DashScope-WorkSpace`。
+Connect to `DASHSCOPE_WS_URL`, sending `Authorization: Bearer <DASHSCOPE_API_KEY>` during the handshake and optionally `X-DashScope-WorkSpace`.
 
 ```json
 {
@@ -645,15 +690,15 @@ WEBDAV_CREDENTIALS="username@passwd"
 }
 ```
 
-收到 `task-started` 后才发送二进制 PCM，同时读取 `result-generated`。带 `heartbeat=true` 的结果不输出文本；`sentence_end=true` 表示该句最终结果，同一句最终结果只处理一次。
+Send binary PCM only after receiving `task-started`, while concurrently reading `result-generated`. Results with `heartbeat=true` do not emit text. `sentence_end=true` marks a finalized sentence, and each sentence's final result is processed only once.
 
-音频发送结束后发送 `finish-task`，继续接收尾句，直到 `task-finished`。实时链路不使用 `ASR_RETRY_*`，失败后不会自动重放音频。支持上下文的型号将 `prompt` 放入 `input.context` 的 `user/input_text` 消息，运行期间通过 `continue-task` 更新。
+After sending all audio, send `finish-task` and continue receiving trailing sentences until `task-finished`. The realtime path does not use `ASR_RETRY_*` and never automatically replays audio after failure. Models supporting context receive `prompt` as a `user/input_text` message in `input.context`, updated during the task through `continue-task`.
 
-上游格式参考 [实时 WebSocket API](https://docs.bailian.console.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api)、[客户端事件](https://docs.bailian.console.aliyun.com/zh/model-studio/fun-asr-client-events)和[服务端事件](https://docs.bailian.console.aliyun.com/zh/model-studio/fun-asr-server-events)。
+See the upstream [Realtime WebSocket API](https://docs.bailian.console.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api), [client events](https://docs.bailian.console.aliyun.com/zh/model-studio/fun-asr-client-events), and [server events](https://docs.bailian.console.aliyun.com/zh/model-studio/fun-asr-server-events).
 
 ### `paraformer-realtime-v2*` / `paraformer-realtime-v1*` / `paraformer-realtime-8k-v2*` / `paraformer-realtime-8k-v1*`
 
-复用 `DASHSCOPE_WS_URL` 和上述 `run-task` / `finish-task` 流程，鉴权和业务空间请求头相同。以下为 v2 的请求示例：
+Reuses `DASHSCOPE_WS_URL` and the `run-task` / `finish-task` flow above, with the same authentication and workspace headers. Example v2 request:
 
 ```json
 {
@@ -678,15 +723,15 @@ WEBDAV_CREDENTIALS="username@passwd"
 }
 ```
 
-`input` 固定为 `{}`，不发送上下文或 `continue-task`。v2 开启心跳，按客户端配置发送 `max_sentence_silence`；v1 两个型号不发送这两个参数。语义断句、语气词过滤、标点和 ITN 保持上游默认，不使用非实时 `ENABLE_ITN` 配置；暂不开放 `vocabulary_id` 等专属参数，也不透传情感标签和字级结果。
+`input` is always `{}`; context and `continue-task` are not sent. v2 enables heartbeats and sends `max_sentence_silence` according to client settings; neither v1 model sends these two parameters. Semantic segmentation, filler-word filtering, punctuation, and ITN retain upstream defaults and do not use the non-realtime `ENABLE_ITN` setting. Model-specific parameters such as `vocabulary_id` are not currently exposed, and emotion labels and word-level results are not forwarded.
 
-Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务根据 `begin_time` 和句子状态生成内部编号，过滤心跳及已经确认的重复结果，只输出 `sentence_end=true` 的最终文本。句子尚未确认就切换开始时间，或 `task-finished` 到达时仍有未确认句子，会返回协议错误，避免遗漏文本后报告成功。字级时间戳仅在句子结束时间无效时用于恢复 VAD 边界；文件输出和手动提交不依赖该时间戳拼接文本。
+Paraformer results have no documented `sentence_id` or `sentence_begin`. The service generates internal IDs from `begin_time` and sentence state, filters heartbeats and already-confirmed duplicates, and emits only final text with `sentence_end=true`. A change in start time before the active sentence is finalized, or `task-finished` with an unconfirmed sentence remaining, returns a protocol error rather than reporting success with missing text. Word-level timestamps are used only to recover VAD boundaries when the sentence end time is invalid; file output and manual commits do not depend on these timestamps to assemble text.
 
-上游格式参考 [Paraformer 实时 WebSocket API](https://docs.bailian.console.aliyun.com/zh/model-studio/websocket-for-paraformer-real-time-service)、[客户端事件](https://docs.bailian.console.aliyun.com/zh/model-studio/paraformer-client-events)和[服务端事件](https://docs.bailian.console.aliyun.com/zh/model-studio/paraformer-server-events)。
+See the upstream [Paraformer Realtime WebSocket API](https://docs.bailian.console.aliyun.com/zh/model-studio/websocket-for-paraformer-real-time-service), [client events](https://docs.bailian.console.aliyun.com/zh/model-studio/paraformer-client-events), and [server events](https://docs.bailian.console.aliyun.com/zh/model-studio/paraformer-server-events).
 
 ### `qwen3-asr-flash-realtime*`
 
-连接 `DASHSCOPE_QWEN_WS_URL`，服务通过 URL 查询参数 `model` 指定模型，鉴权和业务空间请求头与另一套实时协议相同。先接收 `session.created`，再发送配置并等待 `session.updated`：
+Connect to `DASHSCOPE_QWEN_WS_URL` with the model specified in the `model` URL query parameter. Authentication and workspace headers are the same as for the other realtime protocol. Receive `session.created`, send the configuration, and wait for `session.updated`:
 
 ```json
 {
@@ -705,32 +750,32 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
 }
 ```
 
-文件入口使用上述 VAD 配置；WebSocket 入口按客户端选择配置 VAD 或 `null`，默认手动模式。音频以不带 Data URI 前缀的 Base64 字符串发送：
+The file endpoint uses the VAD configuration above. The WebSocket endpoint uses VAD or `null` according to client settings, defaulting to manual mode. Audio is sent as a Base64 string without a Data URI prefix:
 
 ```json
 {"event_id":"event_<ID>","type":"input_audio_buffer.append","audio":"<Base64 PCM16>"}
 ```
 
-手动模式结束输入时先发送 `input_audio_buffer.commit`，再发送 `session.finish`；VAD 模式仅发送 `session.finish`。持续接收结果，直到 `session.finished` 才关闭上游连接。项目按 `item_id` 关联并去重，`text` 的确认前缀转换为增量，`completed.transcript` 补齐最终文本；`stash` 不转换为下游增量。如果上游修改已确认的文本前缀，返回协议错误，避免输出无法撤回的错误拼接。
+In manual mode, send `input_audio_buffer.commit` followed by `session.finish` when input ends. In VAD mode, send only `session.finish`. Continue receiving results and close the upstream connection only after `session.finished`. Items are correlated and deduplicated by `item_id`; confirmed `text` prefixes become deltas, and `completed.transcript` supplies the remaining final text. `stash` is not converted into downstream deltas. If upstream revises an already-confirmed prefix, the service returns a protocol error to avoid emitting incorrect text that cannot be retracted.
 
-上游支持 16000 / 8000 Hz 的 PCM 或 Opus，当前适配统一使用 16000 Hz PCM16；不将客户端输入改为 Ogg / Opus，也不使用非实时分片上传链路。Qwen-ASR 实时模型不发送 `prompt`、`enable_lid` 或 `enable_itn`。
+Upstream supports PCM or Opus at 16000 / 8000 Hz; this adapter consistently uses 16000 Hz PCM16. Client input is not converted to Ogg / Opus and does not use the non-realtime segment upload path. Qwen-ASR realtime models do not send `prompt`, `enable_lid`, or `enable_itn`.
 
-上游格式参考 [Qwen-ASR 实时 WebSocket API](https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process)、[客户端事件](https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-asr-realtime-client-events)和[服务端事件](https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-asr-realtime-server-events)。型号与日期版本参见[官方模型说明](https://help.aliyun.com/zh/model-studio/qwen3-asr-flash-realtime)。
+See the upstream [Qwen-ASR Realtime WebSocket API](https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process), [client events](https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-asr-realtime-client-events), and [server events](https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-asr-realtime-server-events). Model names and dated versions are listed in the [official model documentation](https://help.aliyun.com/zh/model-studio/qwen3-asr-flash-realtime).
 
 ### `qwen3-asr-flash*`
 
-本节仅指非实时 Flash 型号，不包括 Realtime。使用 DashScope multimodal generation endpoint。每个分片会编码为 Base64 Data URI；Base64 编码结果必须小于或等于 10 MiB，超过时请求返回错误。`prompt` 仅作为识别上下文使用；为空时不发送 system 消息。
+This section covers only non-realtime Flash models, excluding Realtime. It uses the DashScope multimodal generation endpoint. Each segment is encoded as a Base64 Data URI; the Base64-encoded data must be at most 10 MiB, otherwise the request returns an error. `prompt` is used only as recognition context; no system message is sent when it is empty.
 
-- ASR 调用：`POST <DASHSCOPE_HTTP_BASE_URL>/services/aigc/multimodal-generation/generation`
+- ASR call: `POST <DASHSCOPE_HTTP_BASE_URL>/services/aigc/multimodal-generation/generation`
 
-请求体核心结构：
+Core request structure:
 
 ```json
 {
   "model": "qwen3-asr-flash",
   "input": {
     "messages": [
-      {"role": "system", "content": [{"text": "专有词：通义千问"}]},
+      {"role": "system", "content": [{"text": "Terminology: Qwen"}]},
       {"role": "user", "content": [{"audio": "data:audio/ogg;base64,..."}]}
     ]
   },
@@ -746,7 +791,7 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
 
 ### `qwen-audio-3.0-asr-flash*` / `fun-asr-flash*`
 
-本节仅指非实时 Flash 型号，不包括 Streaming、Realtime 或 Filetrans。使用 multimodal generation endpoint。每个分片会编码为 Base64 Data URI；Base64 编码结果必须小于或等于 10 MiB，超过时请求返回错误。
+This section covers only non-realtime Flash models, excluding Streaming, Realtime, and Filetrans. It uses the multimodal generation endpoint. Each segment is encoded as a Base64 Data URI; the Base64-encoded data must be at most 10 MiB, otherwise the request returns an error.
 
 ```json
 {
@@ -775,18 +820,18 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
 
 ### `qwen-audio-3.0-asr-flash-filetrans*` / `fun-asr*` / `paraformer*`
 
-本节仅指非实时异步型号。使用 `dashscope.audio.asr.Transcription.async_call` 同款异步任务：
+This section covers only non-realtime asynchronous models. It uses the same asynchronous task flow as `dashscope.audio.asr.Transcription.async_call`:
 
-- 提交任务：`POST <DASHSCOPE_HTTP_BASE_URL>/services/audio/asr/transcription`
-- 轮询任务：`GET <DASHSCOPE_HTTP_BASE_URL>/tasks/<task_id>`
-- 子任务成功后下载 `transcription_url` 并提取文本
-- 这些大文件异步模型不使用 Base64，音频通过 HTTP/HTTPS 公网 URL 或 REST API 支持的临时 `oss://` URL 提供
-- `X-DashScope-OssResourceResolve: enable` 仅在使用临时 `oss://` URL 时发送，HTTP/HTTPS URL 不携带该请求头
-- `prompt` 会作为 `input.context` 中的 `input_text` 发送给 Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR；Paraformer 不发送上下文
-- `language_hints` 会发送给 Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR
-- `language_hints` 仅对 `paraformer-v2` 发送；Paraformer v1、8k、MTL 等模型不会携带该参数
+- Submit task: `POST <DASHSCOPE_HTTP_BASE_URL>/services/audio/asr/transcription`
+- Poll task: `GET <DASHSCOPE_HTTP_BASE_URL>/tasks/<task_id>`
+- After a subtask succeeds, download `transcription_url` and extract the text
+- These large-file asynchronous models do not use Base64; audio is provided through public HTTP/HTTPS URLs or temporary `oss://` URLs supported by the REST API
+- `X-DashScope-OssResourceResolve: enable` is sent only for temporary `oss://` URLs, not HTTP/HTTPS URLs
+- `prompt` is sent as `input_text` inside `input.context` for Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR; no context is sent for Paraformer
+- `language_hints` is sent for Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR
+- For Paraformer, `language_hints` is sent only for `paraformer-v2`; v1, 8k, MTL, and other models do not receive it
 
-提交任务请求体：
+Task submission request body:
 
 ```json
 {
@@ -794,7 +839,7 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
   "input": {
     "file_urls": ["https://files.example.com/audio.ogg"],
     "context": [
-      {"role": "user", "content": [{"type": "input_text", "text": "专有词：通义千问"}]}
+      {"role": "user", "content": [{"type": "input_text", "text": "Terminology: Qwen"}]}
     ]
   },
   "parameters": {
