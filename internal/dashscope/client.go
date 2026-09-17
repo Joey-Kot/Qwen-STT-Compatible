@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"qwen-stt-compatible/internal/config"
+	"qwen-stt-compatible/internal/models"
 )
 
 const (
@@ -120,6 +121,9 @@ func newHTTPClient(timeout time.Duration) *http.Client {
 }
 
 func (c *Client) TranscribeFile(ctx context.Context, path, model string, options ASROptions, prompt string) (string, error) {
+	if route, err := models.Match(model); err == nil && route.Mode == models.Realtime {
+		return "", errors.New("实时模型必须使用 WebSocket 识别链路")
+	}
 	if c.apiKey == "" {
 		return "", errors.New("DASHSCOPE_API_KEY 未配置")
 	}

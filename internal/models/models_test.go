@@ -13,6 +13,85 @@ package models
 
 import "testing"
 
+func TestParaformerRealtimeCapabilities(t *testing.T) {
+	for model, rate := range map[string]int{"paraformer-realtime-v2": 24000, "paraformer-realtime-v1": 16000, "paraformer-realtime-8k-v2": 8000, "paraformer-realtime-8k-v1": 8000} {
+		route, err := Match(model)
+		if err != nil || route.Mode != Realtime || route.Protocol != ParaformerRealtime || route.SampleRate != rate || SupportsContext(model) {
+			t.Fatal(model, route, err)
+		}
+		found := false
+		for _, listed := range List() {
+			if listed == model {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("not listed", model)
+		}
+		for _, language := range []string{"", "zh", "en", "ja", "yue", "ko", "de", "fr", "ru"} {
+			if !SupportsLanguage(model, language) {
+				t.Error(model, language)
+			}
+		}
+		if SupportsLanguage(model, "es") {
+			t.Error(model, "es")
+		}
+	}
+	for _, model := range []string{"paraformer-v2", "paraformer-v1", "paraformer-8k-v1", "paraformer-mtl-v1"} {
+		route, err := Match(model)
+		if err != nil || route.Mode != Async {
+			t.Fatal(model, route, err)
+		}
+	}
+}
+
+func TestRealtimeRoutesPrecedeOfflinePrefixes(t *testing.T) {
+	for _, model := range []string{"qwen3-asr-flash-realtime", "qwen3-asr-flash-realtime-2026-02-10", "qwen-audio-3.0-asr-flash-streaming", "fun-asr-realtime-2026-02-28", "fun-asr-flash-8k-realtime-2026-01-28"} {
+		route, err := Match(model)
+		if err != nil || route.Mode != Realtime {
+			t.Fatalf("%s: %+v %v", model, route, err)
+		}
+	}
+	for _, model := range []string{"qwen-audio-3.0-asr-flash", "qwen-audio-3.0-asr-flash-filetrans", "fun-asr-flash-2026-06-15", "fun-asr"} {
+		route, err := Match(model)
+		if err != nil || route.Mode == Realtime {
+			t.Fatalf("offline %s: %+v %v", model, route, err)
+		}
+	}
+}
+
+func TestQwenRealtimeCapabilities(t *testing.T) {
+	for _, name := range []string{"qwen3-asr-flash-realtime", "qwen3-asr-flash-realtime-2025-10-27", "qwen3-asr-flash-realtime-2026-02-10"} {
+		route, err := Match(name)
+		if err != nil || route.Protocol != QwenRealtime || route.SampleRate != 16000 || SupportsContext(name) {
+			t.Fatalf("route=%+v err=%v", route, err)
+		}
+		for _, language := range []string{"", "zh", "yue", "fil", "uk", "is"} {
+			if !SupportsLanguage(name, language) {
+				t.Error(name, language)
+			}
+		}
+		for _, language := range []string{"tl", "nl", "el"} {
+			if SupportsLanguage(name, language) {
+				t.Error(name, language)
+			}
+		}
+		found := false
+		for _, listed := range List() {
+			if listed == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("missing model", name)
+		}
+	}
+	route, _ := Match("qwen3-asr-flash-2025-09-08")
+	if route.Mode != HTTP {
+		t.Fatal(route)
+	}
+}
+
 func TestSampleRateMatchesModelPrefixWithoutAlias(t *testing.T) {
 	tests := []struct {
 		model string

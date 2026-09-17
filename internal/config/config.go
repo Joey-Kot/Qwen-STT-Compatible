@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"qwen-stt-compatible/internal/realtime"
 )
 
 const defaultMaxUploadMB = 500
@@ -31,29 +33,32 @@ type RetryConfig struct {
 }
 
 type Config struct {
-	Listen            string
-	APITokens         []string
-	DashScopeAPIKey   string
-	DashScopeBaseURL  string
-	WebDAVURL         string
-	WebDAVCredentials string
-	APIConcurrency    int
-	APISegmentLength  time.Duration
-	FixedSliceLength  time.Duration
-	FixedSliceWorkers int
-	SkipTrim          bool
-	SegmentWorkers    int
-	LibavCodecThreads int
-	SilentInterval    time.Duration
-	Padding           time.Duration
-	OutputBitrate     string
-	EnableLID         bool
-	EnableITN         bool
-	UpstreamTimeout   time.Duration
-	Retry             RetryConfig
-	ReadHeaderTimeout time.Duration
-	IdleTimeout       time.Duration
-	MaxUploadBytes    int64
+	Realtime            realtime.Config
+	RealtimeConcurrency int
+	RealtimeIdleTimeout time.Duration
+	Listen              string
+	APITokens           []string
+	DashScopeAPIKey     string
+	DashScopeBaseURL    string
+	WebDAVURL           string
+	WebDAVCredentials   string
+	APIConcurrency      int
+	APISegmentLength    time.Duration
+	FixedSliceLength    time.Duration
+	FixedSliceWorkers   int
+	SkipTrim            bool
+	SegmentWorkers      int
+	LibavCodecThreads   int
+	SilentInterval      time.Duration
+	Padding             time.Duration
+	OutputBitrate       string
+	EnableLID           bool
+	EnableITN           bool
+	UpstreamTimeout     time.Duration
+	Retry               RetryConfig
+	ReadHeaderTimeout   time.Duration
+	IdleTimeout         time.Duration
+	MaxUploadBytes      int64
 }
 
 func Parse(args []string) (Config, error) {
@@ -91,6 +96,7 @@ func Parse(args []string) (Config, error) {
 
 	apiToken := strings.Join(cfg.APITokens, ",")
 	fs := flag.NewFlagSet("qwen-stt-compatible", flag.ContinueOnError)
+	registerRealtimeFlags(fs, &cfg)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage of %s:\n", fs.Name())
 		fs.VisitAll(func(f *flag.Flag) {
@@ -128,26 +134,11 @@ func Parse(args []string) (Config, error) {
 		return cfg, err
 	}
 	cfg.APITokens = splitTokens(apiToken)
+	if err := validateRealtimeConfig(cfg); err != nil {
+		return cfg, err
+	}
 	if maxUploadMB <= 0 {
 		return cfg, fmt.Errorf("--max-upload-mb must be positive")
-	}
-	if cfg.Retry.MaxAttempts <= 0 {
-		return cfg, fmt.Errorf("--asr-retry-max-attempts must be positive")
-	}
-	if cfg.Retry.InitialDelay <= 0 {
-		return cfg, fmt.Errorf("--asr-retry-initial-delay must be positive")
-	}
-	if cfg.Retry.Factor <= 0 {
-		return cfg, fmt.Errorf("--asr-retry-factor must be positive")
-	}
-	if cfg.Retry.MaxDelay <= 0 {
-		return cfg, fmt.Errorf("--asr-retry-max-delay must be positive")
-	}
-	if cfg.SegmentWorkers < 0 {
-		return cfg, fmt.Errorf("--segment-workers must be non-negative")
-	}
-	if cfg.LibavCodecThreads < 0 {
-		return cfg, fmt.Errorf("--libav-codec-threads must be non-negative")
 	}
 	cfg.DashScopeBaseURL = strings.TrimRight(cfg.DashScopeBaseURL, "/")
 	cfg.WebDAVURL = strings.TrimRight(strings.TrimSpace(cfg.WebDAVURL), "/")
@@ -159,6 +150,30 @@ func Parse(args []string) (Config, error) {
 	}
 	cfg.MaxUploadBytes = maxUploadMB << 20
 	return cfg, nil
+}
+
+// ValidateOffline is evaluated only on the non-realtime request path. These
+// options must not prevent a server used for realtime transcription from starting.
+func (cfg Config) ValidateOffline() error {
+	if cfg.Retry.MaxAttempts <= 0 {
+		return fmt.Errorf("--asr-retry-max-attempts must be positive")
+	}
+	if cfg.Retry.InitialDelay <= 0 {
+		return fmt.Errorf("--asr-retry-initial-delay must be positive")
+	}
+	if cfg.Retry.Factor <= 0 {
+		return fmt.Errorf("--asr-retry-factor must be positive")
+	}
+	if cfg.Retry.MaxDelay <= 0 {
+		return fmt.Errorf("--asr-retry-max-delay must be positive")
+	}
+	if cfg.SegmentWorkers < 0 {
+		return fmt.Errorf("--segment-workers must be non-negative")
+	}
+	if cfg.LibavCodecThreads < 0 {
+		return fmt.Errorf("--libav-codec-threads must be non-negative")
+	}
+	return nil
 }
 
 func validateWebDAVConfig(rawURL, credentials string) error {

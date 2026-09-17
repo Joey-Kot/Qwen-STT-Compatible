@@ -33,6 +33,7 @@ import (
 	"qwen-stt-compatible/internal/config"
 	"qwen-stt-compatible/internal/dashscope"
 	"qwen-stt-compatible/internal/models"
+	"qwen-stt-compatible/internal/realtime"
 	"qwen-stt-compatible/internal/sse"
 )
 
@@ -46,9 +47,11 @@ type ASRClient interface {
 }
 
 type Server struct {
-	cfg    config.Config
-	client ASRClient
-	apiSem chan struct{}
+	cfg         config.Config
+	client      ASRClient
+	apiSem      chan struct{}
+	realtime    realtime.Starter
+	realtimeSem chan struct{}
 }
 
 type transcriptionResult struct {
@@ -61,7 +64,12 @@ func New(cfg config.Config, client ASRClient) *Server {
 	if concurrency <= 0 {
 		concurrency = 1
 	}
-	return &Server{cfg: cfg, client: client, apiSem: make(chan struct{}, concurrency)}
+	rtCfg := cfg.Realtime
+	rtCfg.APIKey = cfg.DashScopeAPIKey
+	if cfg.RealtimeConcurrency <= 0 {
+		cfg.RealtimeConcurrency = 10
+	}
+	return &Server{cfg: cfg, client: client, apiSem: make(chan struct{}, concurrency), realtime: realtime.New(rtCfg), realtimeSem: make(chan struct{}, cfg.RealtimeConcurrency)}
 }
 
 func CleanupTempDirs() error {
@@ -108,6 +116,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleTranscriptions(w, r)
 	case "/v1/models":
 		s.handleModels(w, r)
+	case "/v1/realtime":
+		s.handleRealtime(w, r)
 	default:
 		openAIError(w, http.StatusNotFound, "not found", "invalid_request_error")
 	}
@@ -119,6 +129,9 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, stream, err := s.processRequest(w, r)
+	if errors.Is(err, errResponseWritten) {
+		return
+	}
 	if err != nil {
 		s.handleProcessError(w, err)
 		return
@@ -178,6 +191,18 @@ func (s *Server) processRequest(w http.ResponseWriter, r *http.Request) (transcr
 		return transcriptionResult{}, stream, err
 	}
 	if err := out.Close(); err != nil {
+		return transcriptionResult{}, stream, err
+	}
+	route, _ := models.Match(modelName)
+	if route.Mode == models.Realtime {
+		log.Printf("request=%s endpoint=/v1/audio/transcriptions file=%s model=%s mode=realtime sample_rate=%d", requestID, sanitizeLogValue(header.Filename), sanitizeLogValue(modelName), sampleRate)
+		err := s.transcribeRealtimeFile(w, r, inputPath, modelName, language, prompt, sampleRate, stream)
+		if err != nil {
+			return transcriptionResult{}, stream, err
+		}
+		return transcriptionResult{}, stream, errResponseWritten
+	}
+	if err := s.cfg.ValidateOffline(); err != nil {
 		return transcriptionResult{}, stream, err
 	}
 

@@ -5,7 +5,7 @@ their complete license texts in `THIRD_PARTY_LICENSES/`.
 
 ## ASR-Audio-Preprocess
 
-- Version: v0.0.0-20260709154624-207248af702d
+- Version: v0.0.0-20260901092746-72922741cf43
 - Source: https://github.com/Joey-Kot/ASR-Audio-Preprocess
 - License: GPL-3.0-or-later
 - Full license text: `LICENSE`
@@ -27,6 +27,17 @@ their complete license texts in `THIRD_PARTY_LICENSES/`.
 - License: BSD-3-Clause
 - Full license text: `THIRD_PARTY_LICENSES/Opus-BSD-3-Clause.txt`
 - Build configuration: `scripts/bootstrap-static-audio-deps.sh`
+
+## Gorilla WebSocket
+
+- Version: v1.5.3
+- Source: https://github.com/gorilla/websocket
+- License: BSD-2-Clause
+- Full license text: `THIRD_PARTY_LICENSES/Gorilla-WebSocket-BSD-2-Clause.txt`
+
+The Docker runtime also installs the distribution's FFmpeg executable for
+streaming file decoding. Its package licenses and build configuration are
+provided by Debian; it is separate from the statically linked FFmpeg above.
 
 ## Project License
 

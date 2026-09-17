@@ -13,6 +13,19 @@ package config
 
 import "testing"
 
+func TestRealtimeConfigFlagsAndValidation(t *testing.T) {
+	t.Setenv("REALTIME_CONCURRENCY", "3")
+	cfg, err := Parse([]string{"--realtime-concurrency", "7", "--dashscope-ws-url", "wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference", "--realtime-finish-timeout", "45s"})
+	if err != nil || cfg.RealtimeConcurrency != 7 || cfg.Realtime.FinishTimeout.String() != "45s" {
+		t.Fatalf("config=%+v err=%v", cfg, err)
+	}
+	for _, args := range [][]string{{"--dashscope-ws-url", "http://example.com"}, {"--realtime-concurrency", "0"}, {"--realtime-start-timeout", "0s"}} {
+		if _, err := Parse(args); err == nil {
+			t.Errorf("accepted %v", args)
+		}
+	}
+}
+
 func TestParseDefaultsMaxUploadTo500MiB(t *testing.T) {
 	t.Setenv("MAX_UPLOAD_MB", "")
 	cfg, err := Parse(nil)
@@ -212,11 +225,31 @@ func TestParseRejectsSingleDashFlag(t *testing.T) {
 	}
 }
 
-func TestParseRejectsNegativePreprocessConcurrency(t *testing.T) {
-	if _, err := Parse([]string{"--segment-workers", "-1"}); err == nil {
-		t.Fatal("Parse accepted negative segment workers")
+func TestOfflineValidationDoesNotBlockRealtimeStartup(t *testing.T) {
+	for _, args := range [][]string{{"--segment-workers=-1"}, {"--libav-codec-threads=-1"}, {"--asr-retry-max-attempts", "0"}} {
+		cfg, err := Parse(args)
+		if err != nil {
+			t.Fatalf("unused offline config blocked startup: %v", err)
+		}
+		if err := cfg.ValidateOffline(); err == nil {
+			t.Errorf("offline request accepted %v", args)
+		}
 	}
-	if _, err := Parse([]string{"--libav-codec-threads", "-1"}); err == nil {
-		t.Fatal("Parse accepted negative libav codec threads")
+}
+
+func TestQwenRealtimeURLConfiguration(t *testing.T) {
+	t.Setenv("DASHSCOPE_QWEN_WS_URL", "wss://workspace.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/realtime")
+	cfg, err := Parse(nil)
+	if err != nil || cfg.Realtime.QwenURL != "wss://workspace.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/realtime" {
+		t.Fatal(cfg.Realtime, err)
+	}
+	cfg, err = Parse([]string{"--dashscope-qwen-ws-url", "wss://custom.example/realtime"})
+	if err != nil || cfg.Realtime.QwenURL != "wss://custom.example/realtime" {
+		t.Fatal(cfg.Realtime, err)
+	}
+	for _, address := range []string{"http://example.com", "ws://example.com", "wss://user:pass@example.com", "wss://example.com/#fragment"} {
+		if _, err := Parse([]string{"--dashscope-qwen-ws-url", address}); err == nil {
+			t.Error("accepted", address)
+		}
 	}
 }

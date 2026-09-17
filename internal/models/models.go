@@ -19,16 +19,71 @@ import (
 type Route struct {
 	Prefix     string
 	SampleRate int
+	Mode       Mode
+	Protocol   string
 }
 
+const QwenRealtime = "qwen-realtime"
+const ParaformerRealtime = "paraformer-realtime"
+
+type Mode string
+
+const (
+	HTTP     Mode = "http"
+	Async    Mode = "async"
+	Realtime Mode = "realtime"
+)
+
 var routes = []Route{
-	{Prefix: "qwen-audio-3.0-asr-flash-filetrans", SampleRate: 16000},
-	{Prefix: "qwen-audio-3.0-asr-flash", SampleRate: 16000},
-	{Prefix: "qwen3-asr-flash", SampleRate: 16000},
-	{Prefix: "fun-asr-flash", SampleRate: 16000},
-	{Prefix: "fun-asr", SampleRate: 16000},
-	{Prefix: "paraformer-8k", SampleRate: 8000},
-	{Prefix: "paraformer", SampleRate: 16000},
+	{Prefix: "paraformer-realtime-8k-v2", SampleRate: 8000, Mode: Realtime, Protocol: ParaformerRealtime},
+	{Prefix: "paraformer-realtime-8k-v1", SampleRate: 8000, Mode: Realtime, Protocol: ParaformerRealtime},
+	{Prefix: "paraformer-realtime-v2", SampleRate: 24000, Mode: Realtime, Protocol: ParaformerRealtime},
+	{Prefix: "paraformer-realtime-v1", SampleRate: 16000, Mode: Realtime, Protocol: ParaformerRealtime},
+	{Prefix: "qwen3-asr-flash-realtime", SampleRate: 16000, Mode: Realtime, Protocol: QwenRealtime},
+	{Prefix: "qwen-audio-3.0-asr-flash-streaming", SampleRate: 24000, Mode: Realtime},
+	{Prefix: "fun-asr-flash-8k-realtime", SampleRate: 8000, Mode: Realtime},
+	{Prefix: "fun-asr-realtime", SampleRate: 24000, Mode: Realtime},
+	{Prefix: "qwen-audio-3.0-asr-flash-filetrans", SampleRate: 16000, Mode: Async},
+	{Prefix: "qwen-audio-3.0-asr-flash", SampleRate: 16000, Mode: HTTP},
+	{Prefix: "qwen3-asr-flash", SampleRate: 16000, Mode: HTTP},
+	{Prefix: "fun-asr-flash", SampleRate: 16000, Mode: HTTP},
+	{Prefix: "fun-asr", SampleRate: 16000, Mode: Async},
+	{Prefix: "paraformer-8k", SampleRate: 8000, Mode: Async},
+	{Prefix: "paraformer", SampleRate: 16000, Mode: Async},
+}
+
+func SupportsContext(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "qwen-audio-3.0-asr-flash-streaming", "fun-asr-realtime", "fun-asr-realtime-2025-11-07":
+		return true
+	}
+	return false
+}
+
+func IsParaformerV1(model string) bool {
+	key := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(key, "paraformer-realtime-v1") || strings.HasPrefix(key, "paraformer-realtime-8k-v1")
+}
+
+func SupportsLanguage(model, language string) bool {
+	if language == "" {
+		return true
+	}
+	key := strings.ToLower(strings.TrimSpace(model))
+	languages := "zh en ja ko vi th id ms tl hi ar fr de es pt ru it nl sv da fi no el pl cs hu ro bg hr sk"
+	switch {
+	case strings.HasPrefix(key, "paraformer-realtime"):
+		languages = "zh en ja yue ko de fr ru"
+	case strings.HasPrefix(key, "qwen3-asr-flash-realtime"):
+		languages = "zh yue en ja de ko ru fr pt ar it es hi id th tr uk vi cs da fil fi is ms no pl sv"
+	case strings.HasPrefix(key, "fun-asr-flash-8k-realtime"):
+		languages = "zh"
+	case key == "fun-asr-realtime-2026-02-28":
+		languages = "zh en ja"
+	case key == "fun-asr-realtime-2025-09-15":
+		languages = "zh en"
+	}
+	return strings.Contains(" "+languages+" ", " "+language+" ")
 }
 
 func Match(name string) (Route, error) {
@@ -54,6 +109,20 @@ func SampleRate(model string) (int, error) {
 
 func List() []string {
 	return []string{
+		"paraformer-realtime-v2",
+		"paraformer-realtime-v1",
+		"paraformer-realtime-8k-v2",
+		"paraformer-realtime-8k-v1",
+		"qwen3-asr-flash-realtime",
+		"qwen3-asr-flash-realtime-2026-02-10",
+		"qwen3-asr-flash-realtime-2025-10-27",
+		"qwen-audio-3.0-asr-flash-streaming",
+		"fun-asr-realtime",
+		"fun-asr-realtime-2025-11-07",
+		"fun-asr-realtime-2026-02-28",
+		"fun-asr-realtime-2025-09-15",
+		"fun-asr-flash-8k-realtime",
+		"fun-asr-flash-8k-realtime-2026-01-28",
 		"qwen-audio-3.0-asr-flash-filetrans",
 		"qwen-audio-3.0-asr-flash",
 		"qwen3-asr-flash",
