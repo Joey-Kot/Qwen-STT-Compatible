@@ -54,7 +54,7 @@ ASR_RETRY_MAX_DELAY="8.0"
 
 - 兼容 `POST /v1/audio/transcriptions`
 - 支持 Bearer Token 鉴权，`API_TOKEN` 可用逗号配置多个 token
-- 非实时预处理链路：默认转 WAV、固定分片并发静音裁剪、合并、按静音区间并发导出和编码 ASR 分片；`SKIP_TRIM=true` 时，统一转 WAV 后直接按静音区间分片
+- 非实时预处理链路：默认转 WAV、固定分片并发静音裁剪、合并、按静音区间并发导出和编码 ASR 分片；`SKIP_TRIM=true` 或请求 `stream=true` 时，跳过裁剪和合并，统一转 WAV 后直接按静音区间分片
 - 非实时 Qwen3-ASR-Flash、Qwen-Audio-3.0-ASR-Flash、Fun-ASR-Flash 使用 Base64 Data URI 直接传入音频，并校验编码后的数据不超过 10 MiB；Qwen-Audio-3.0-ASR-Flash-Filetrans、Fun-ASR、Paraformer 使用 URL，分片文件不超过 2 GiB
 - 支持 Qwen-Audio-3.0-ASR-Flash、Qwen-Audio-3.0-ASR-Flash-Filetrans、Qwen3-ASR-Flash、Fun-ASR-Flash、Fun-ASR、Paraformer 系列非实时模型，模型名原样透传给 DashScope
 - 支持 Qwen-Audio-3.0-ASR-Flash-Streaming、Fun-ASR-Realtime、Fun-ASR-Flash-8k-Realtime、Qwen3-ASR-Flash-Realtime 和 Paraformer-Realtime 系列实时模型，分别适配二进制音频和 Base64 音频事件协议
@@ -74,7 +74,7 @@ ASR_RETRY_MAX_DELAY="8.0"
 - `prompt`：可选；非实时 Qwen3-ASR-Flash 使用 system 上下文，同步 Qwen-Audio-3.0-ASR-Flash / Fun-ASR-Flash 使用 `input_text` 消息，Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR 使用 `input.context`；实时型号按下方上下文能力限制校验，Qwen3-ASR-Flash-Realtime 和 Paraformer-Realtime 不支持非空 `prompt`
 - `enable_lid`：兼容字段，当前支持的模型不会将其传给上游
 - `enable_itn`：可选，非实时模型默认读取服务配置 `ENABLE_ITN` / `--enable-itn`；实时模型忽略此字段
-- `stream`：可选，默认 `false`；设为 `true` 时返回 SSE
+- `stream`：可选，默认 `false`；设为 `true` 时返回 SSE，非实时模型同时强制跳过固定切片静音裁剪和合并
 - `response_format`：实时模型仅支持省略或 `json`
 
 示例：
@@ -94,7 +94,9 @@ curl -X POST "http://localhost:8080/v1/audio/transcriptions" \
 {"status":"success","text":"..."}
 ```
 
-非实时模型的伪流式响应（全部识别结束后输出）：
+非实时模型使用 `stream=true` 时，本次请求强制按 `SKIP_TRIM=true` 处理，即使服务配置为 `false` 也跳过固定切片静音裁剪和合并。统一转 WAV 后，仍按 `API_SEGMENT_LENGTH` 分片，由 `SEGMENT_WORKERS` 控制分片导出和编码并发，`API_CONCURRENCY` 控制上游识别并发；`FFMPEG_SEGMENT_LENGTH` 和 `FFMPEG_WORKS` 不参与裁剪。此覆盖不修改全局配置，也不影响其他请求。
+
+伪流式响应仍在全部分片识别结束后输出：
 
 ```text
 data: {"type":"transcript.text.delta","delta":"..."}
@@ -306,7 +308,7 @@ Qwen-ASR 协议独立配置 `DASHSCOPE_QWEN_WS_URL`，同地域域名下的路�
 
 非实时 ASR 分片会统一输出为 `ogg` 容器和 `libopus` 编码，因此不会再按原始文件扩展名做模型格式白名单校验。采样率按模型路由归一化：`paraformer-8k*` 使用 `8000Hz`，其他非实时模型使用 `16000Hz`；`OUTPUT_BITRATE` / `--output-bitrate` 控制 Opus 码率，默认 `128k`。
 `SEGMENT_WORKERS` / `--segment-workers` 控制 ASR 分片导出和编码并发数，`0` 表示由预处理库按 CPU 自动选择；`LIBAV_CODEC_THREADS` / `--libav-codec-threads` 控制每条 libav pipeline 的 decoder/encoder 线程数，`0` 表示使用 libav 默认策略。显式调大时需要同时考虑 `FFMPEG_WORKS`，避免 Go worker 和 libav codec 线程叠加后过量并发。
-`SKIP_TRIM` / `--skip-trim` 默认为 `false`。设置为 `true`（也可使用 `1`）时，跳过固定切片静音裁剪和合并，统一转 WAV 后直接调用预处理库完成静音区间分片。
+`SKIP_TRIM` / `--skip-trim` 默认为 `false`。设置为 `true`（也可使用 `1`）时，跳过固定切片静音裁剪和合并，统一转 WAV 后直接调用预处理库完成静音区间分片。非实时模型的 `stream=true` 请求强制启用此行为；`stream=false` 或省略时仍遵循服务配置。实时模型的处理链路不受此配置影响。
 `ENABLE_LID` / `enable_lid` 仅作为兼容配置保留，当前支持的模型不会将其传给上游。`ENABLE_ITN` 控制请求未显式传入 `enable_itn` 时的默认值；请求字段一旦传入，会覆盖服务配置默认值。
 生产部署建议用环境变量传入 `API_TOKEN` 和 `DASHSCOPE_API_KEY`，避免密钥出现在进程命令行里；本地测试也可以使用 `--api-token` 和 `--dashscope-api-key`。
 
@@ -427,7 +429,7 @@ ENABLE_ITN="false" \
 | `--api-segment-length` | `175s` | `API_SEGMENT_LENGTH` | 单个 ASR 分片最大时长 |
 | `--fixed-slice-length` | `5s` | `FFMPEG_SEGMENT_LENGTH` | 固定分片静音裁剪的切片长度 |
 | `--fixed-slice-workers` | `16` | `FFMPEG_WORKS` | 固定分片静音裁剪并发数 |
-| `--skip-trim` | `false` | `SKIP_TRIM` | 跳过固定分片静音裁剪和合并，统一转码后直接按静音区间分片；支持 `0/1` 或 `true/false` |
+| `--skip-trim` | `false` | `SKIP_TRIM` | 跳过固定分片静音裁剪和合并，统一转码后直接按静音区间分片；支持 `0/1` 或 `true/false`；非实时 `stream=true` 请求强制启用 |
 | `--segment-workers` | `0` | `SEGMENT_WORKERS` | ASR 分片导出和编码并发数，`0` 表示按 CPU 自动选择 |
 | `--libav-codec-threads` | `0` | `LIBAV_CODEC_THREADS` | 单个 libav pipeline 的 decoder/encoder 线程数，`0` 表示 libav 默认策略 |
 | `--silent-interval` | `700ms` | `SILENT_INTERVAL` | 最短静音判定时长 |
@@ -462,7 +464,7 @@ request=<request_id> endpoint=/v1/audio/transcriptions file=<filename> model=<mo
 
 实时文件请求改为记录 `mode=realtime` 和上游 `sample_rate`，不输出分片、裁剪日志；WebSocket 会话记录 `session=<session_id>` 的连接和关闭事件。实时 PCM 数据通过管道或内存传输，不生成 Ogg 分片，也不上传 OSS / WebDAV。
 
-默认模式（`SKIP_TRIM=false`）的固定切片静音裁剪成功时会输出：
+非实时非流式请求在 `SKIP_TRIM=false` 时，固定切片静音裁剪成功会输出：
 
 ```text
 fixed trim input_duration=<音频文件原始长度> fixed_slice_length=<固定切片长度> slices=<成功切片数量> trimmed_slices=<检测到静音并进行了裁剪的切片数量>
@@ -474,7 +476,7 @@ fixed trim input_duration=<音频文件原始长度> fixed_slice_length=<固定�
 segments merged_duration=<切片合并后音频长度> asr_segments=<并发 ASR 分片数量>
 ```
 
-`SKIP_TRIM=true` 时不会输出固定裁剪日志，直接分片后会输出：
+非实时请求配置 `SKIP_TRIM=true` 或请求 `stream=true` 时，不会输出固定裁剪日志，直接分片后会输出：
 
 ```text
 segments skip_trim=true input_duration=<统一转码后音频长度> asr_segments=<并发 ASR 分片数量>

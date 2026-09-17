@@ -25,6 +25,22 @@ import (
 	"qwen-stt-compatible/internal/dashscope"
 )
 
+func TestSkipTrimForRequest(t *testing.T) {
+	for _, configured := range []bool{false, true} {
+		server := New(config.Config{SkipTrim: configured}, nil)
+		// Reuse the server to ensure a streaming request does not affect later requests.
+		for _, stream := range []bool{false, true, false} {
+			want := configured || stream
+			if got := server.skipTrimForRequest(stream); got != want {
+				t.Errorf("SkipTrim=%v stream=%v: got %v want %v", configured, stream, got, want)
+			}
+			if server.cfg.SkipTrim != configured {
+				t.Fatal("request changed shared SkipTrim configuration")
+			}
+		}
+	}
+}
+
 func TestSanitizeLogValueEscapesControlCharacters(t *testing.T) {
 	input := "原始\n文件\r名\t\x01.wav"
 	want := `原始\n文件\r名\t\x01.wav`

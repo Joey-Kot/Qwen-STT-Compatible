@@ -207,7 +207,7 @@ func (s *Server) processRequest(w http.ResponseWriter, r *http.Request) (transcr
 	}
 
 	log.Printf("request=%s endpoint=/v1/audio/transcriptions file=%s model=%s language=%s enable_lid=%v enable_itn=%v", requestID, sanitizeLogValue(header.Filename), modelName, language, enableLID, enableITN)
-	segments, err := s.preprocess(r.Context(), inputPath, tempDir, sampleRate)
+	segments, err := s.preprocess(r.Context(), inputPath, tempDir, sampleRate, s.skipTrimForRequest(stream))
 	if err != nil {
 		return transcriptionResult{}, stream, err
 	}
@@ -222,7 +222,12 @@ func (s *Server) processRequest(w http.ResponseWriter, r *http.Request) (transcr
 	return transcriptionResult{Status: "success", Text: text}, stream, nil
 }
 
-func (s *Server) preprocess(ctx context.Context, inputPath, tempDir string, sampleRate int) ([]smartaudio.Segment, error) {
+// Pseudo-streaming skips trimming without changing the shared server configuration.
+func (s *Server) skipTrimForRequest(stream bool) bool {
+	return stream || s.cfg.SkipTrim
+}
+
+func (s *Server) preprocess(ctx context.Context, inputPath, tempDir string, sampleRate int, skipTrim bool) ([]smartaudio.Segment, error) {
 	cfg := smartaudio.DefaultConfig()
 	cfg.Silence.MinSilence = s.cfg.SilentInterval
 	cfg.Silence.Padding = s.cfg.Padding
@@ -249,7 +254,7 @@ func (s *Server) preprocess(ctx context.Context, inputPath, tempDir string, samp
 	if err != nil {
 		return nil, err
 	}
-	if s.cfg.SkipTrim {
+	if skipTrim {
 		segments, splitInfo, err := processor.SplitWAVBySilenceGroups(ctx, wavPath)
 		if err != nil {
 			return nil, err
