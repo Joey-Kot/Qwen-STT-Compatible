@@ -440,7 +440,7 @@ func sanitizeLogValue(value string) string {
 
 func normalizeLanguageCode(lang string) string {
 	lang = strings.ToLower(strings.TrimSpace(lang))
-	if matched, _ := regexp.MatchString(`^[a-z]{2}$`, lang); matched {
+	if matched, _ := regexp.MatchString(`^[a-z]{2,3}$`, lang); matched {
 		return lang
 	}
 	return ""

@@ -16,6 +16,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -36,9 +37,11 @@ import (
 )
 
 const (
-	multimodalPath = "services/aigc/multimodal-generation/generation"
-	transcribePath = "services/audio/asr/transcription"
-	uploadsPath    = "uploads"
+	multimodalPath     = "services/aigc/multimodal-generation/generation"
+	transcribePath     = "services/audio/asr/transcription"
+	uploadsPath        = "uploads"
+	maxBase64AudioSize = int64(10 << 20)
+	maxURLAudioSize    = int64(2 << 30)
 )
 
 type Config struct {
@@ -69,6 +72,13 @@ type uploadedFile struct {
 	resourceURL string
 	webDAVURL   string
 }
+
+type permanentError struct {
+	err error
+}
+
+func (e *permanentError) Error() string { return e.err.Error() }
+func (e *permanentError) Unwrap() error { return e.err }
 
 type ASROptions struct {
 	EnableLID  bool   `json:"enable_lid"`
@@ -113,6 +123,9 @@ func (c *Client) TranscribeFile(ctx context.Context, path, model string, options
 	if c.apiKey == "" {
 		return "", errors.New("DASHSCOPE_API_KEY 未配置")
 	}
+	if err := validateAudioFileSize(path, model); err != nil {
+		return "", err
+	}
 	var lastErr error
 	delay := c.retry.InitialDelay
 	attempts := c.retry.MaxAttempts
@@ -125,6 +138,10 @@ func (c *Client) TranscribeFile(ctx context.Context, path, model string, options
 			return text, nil
 		}
 		lastErr = err
+		var permanent *permanentError
+		if errors.As(err, &permanent) {
+			return "", err
+		}
 		if attempt < attempts {
 			if delay <= 0 {
 				delay = 500 * time.Millisecond
@@ -150,45 +167,49 @@ func (c *Client) transcribeOnce(ctx context.Context, path, model string, options
 	switch modelFamily(model) {
 	case "qwen3-asr-flash":
 		return c.transcribeQwen3Flash(ctx, path, model, options, prompt)
-	case "fun-asr-flash":
-		return c.transcribeFunASRFlash(ctx, path, model, options)
-	case "fun-asr", "paraformer":
-		return c.transcribeAsyncTask(ctx, path, model, options)
+	case "audio3-asr-flash":
+		return c.transcribeAudio3ASRFlash(ctx, path, model, options, prompt)
+	case "audio3-asr-filetrans", "fun-asr", "paraformer":
+		return c.transcribeAsyncTask(ctx, path, model, options, prompt)
 	default:
 		return "", fmt.Errorf("不支持的模型前缀: %q", model)
 	}
 }
 
 func (c *Client) transcribeQwen3Flash(ctx context.Context, path, model string, options ASROptions, prompt string) (string, error) {
-	uploaded, err := c.upload(ctx, model, path)
+	audioData, err := audioDataURI(path)
 	if err != nil {
 		return "", err
 	}
-	defer c.cleanupUploadedFile(uploaded)
+	messages := make([]any, 0, 2)
+	if prompt = strings.TrimSpace(prompt); prompt != "" {
+		messages = append(messages, map[string]any{
+			"role":    "system",
+			"content": []any{map[string]any{"text": prompt}},
+		})
+	}
+	messages = append(messages, map[string]any{
+		"role":    "user",
+		"content": []any{map[string]any{"audio": audioData}},
+	})
+	asrOptions := map[string]any{
+		"enable_itn": options.EnableITN,
+	}
+	if options.Language != "" {
+		asrOptions["language"] = options.Language
+	}
 	body := map[string]any{
 		"model": model,
 		"input": map[string]any{
-			"messages": []any{
-				map[string]any{
-					"role":    "system",
-					"content": []any{map[string]any{"text": prompt}},
-				},
-				map[string]any{
-					"role":    "user",
-					"content": []any{map[string]any{"audio": uploaded.resourceURL}},
-				},
-			},
+			"messages": messages,
 		},
 		"parameters": map[string]any{
 			"result_format": "message",
-			"asr_options":   options,
+			"asr_options":   asrOptions,
 		},
 	}
 	var response dashScopeResponse
-	if err := c.doJSON(ctx, http.MethodPost, c.endpoint(multimodalPath), body, &response, map[string]string{
-		"X-DashScope-OssResourceResolve": "enable",
-		"X-DashScope-SSE":                "disable",
-	}); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, c.endpoint(multimodalPath), body, &response, nil); err != nil {
 		return "", err
 	}
 	if response.Code != "" {
@@ -201,77 +222,97 @@ func (c *Client) transcribeQwen3Flash(ctx context.Context, path, model string, o
 	return text, nil
 }
 
-func (c *Client) transcribeFunASRFlash(ctx context.Context, path, model string, options ASROptions) (string, error) {
-	uploaded, err := c.upload(ctx, model, path)
+func (c *Client) transcribeAudio3ASRFlash(ctx context.Context, path, model string, options ASROptions, prompt string) (string, error) {
+	audioData, err := audioDataURI(path)
 	if err != nil {
 		return "", err
 	}
-	defer c.cleanupUploadedFile(uploaded)
 	sampleRate := options.SampleRate
 	if sampleRate <= 0 {
 		sampleRate = 16000
 	}
-	body := map[string]any{
-		"model": model,
-		"input": map[string]any{
-			"messages": []any{
+	messages := make([]any, 0, 2)
+	if prompt = strings.TrimSpace(prompt); prompt != "" {
+		messages = append(messages, map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{"type": "input_text", "text": prompt},
+			},
+		})
+	}
+	messages = append(messages,
+		map[string]any{
+			"role": "user",
+			"content": []any{
 				map[string]any{
-					"role": "user",
-					"content": []any{
-						map[string]any{
-							"type": "input_audio",
-							"input_audio": map[string]any{
-								"data": uploaded.resourceURL,
-							},
-						},
+					"type": "input_audio",
+					"input_audio": map[string]any{
+						"data": audioData,
 					},
 				},
 			},
 		},
-		"parameters": map[string]any{
-			"format":      audioFormat(path),
-			"sample_rate": fmt.Sprintf("%d", sampleRate),
-		},
+	)
+	parameters := map[string]any{
+		"format":      audioFormat(path),
+		"sample_rate": fmt.Sprintf("%d", sampleRate),
 	}
-	var response dashScopeResponse
-	if err := c.doJSON(ctx, http.MethodPost, c.endpoint(multimodalPath), body, &response, map[string]string{
-		"X-DashScope-OssResourceResolve": "enable",
-		"X-DashScope-SSE":                "disable",
-	}); err != nil {
-		return "", err
-	}
-	if response.Code != "" {
-		return "", fmt.Errorf("%s: %s", response.Code, response.Message)
-	}
-	text := extractText(response.Output)
-	if strings.TrimSpace(text) == "" {
-		return "【该段音频转录出错】", nil
-	}
-	return text, nil
-}
-
-func (c *Client) transcribeAsyncTask(ctx context.Context, path, model string, options ASROptions) (string, error) {
-	uploaded, err := c.upload(ctx, model, path)
-	if err != nil {
-		return "", err
-	}
-	defer c.cleanupUploadedFile(uploaded)
-	parameters := map[string]any{}
 	if options.Language != "" {
 		parameters["language_hints"] = []string{options.Language}
 	}
 	body := map[string]any{
 		"model": model,
 		"input": map[string]any{
-			"file_urls": []string{uploaded.resourceURL},
+			"messages": messages,
 		},
 		"parameters": parameters,
 	}
-	var launched asyncTaskResponse
-	if err := c.doJSON(ctx, http.MethodPost, c.endpoint(transcribePath), body, &launched, map[string]string{
-		"X-DashScope-Async":              "enable",
-		"X-DashScope-OssResourceResolve": "enable",
+	var response dashScopeResponse
+	if err := c.doJSON(ctx, http.MethodPost, c.endpoint(multimodalPath), body, &response, map[string]string{
+		"X-DashScope-SSE": "disable",
 	}); err != nil {
+		return "", err
+	}
+	if response.Code != "" {
+		return "", fmt.Errorf("%s: %s", response.Code, response.Message)
+	}
+	text := extractText(response.Output)
+	if strings.TrimSpace(text) == "" {
+		return "【该段音频转录出错】", nil
+	}
+	return text, nil
+}
+
+func (c *Client) transcribeAsyncTask(ctx context.Context, path, model string, options ASROptions, prompt string) (string, error) {
+	uploaded, err := c.upload(ctx, model, path)
+	if err != nil {
+		return "", err
+	}
+	defer c.cleanupUploadedFile(uploaded)
+	parameters := map[string]any{}
+	if options.Language != "" && supportsLanguageHints(model) {
+		parameters["language_hints"] = []string{options.Language}
+	}
+	input := map[string]any{
+		"file_urls": []string{uploaded.resourceURL},
+	}
+	if prompt = strings.TrimSpace(prompt); prompt != "" && supportsAsyncContext(model) {
+		input["context"] = []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": prompt},
+				},
+			},
+		}
+	}
+	body := map[string]any{
+		"model":      model,
+		"input":      input,
+		"parameters": parameters,
+	}
+	var launched asyncTaskResponse
+	if err := c.doJSON(ctx, http.MethodPost, c.endpoint(transcribePath), body, &launched, asyncTaskHeaders(uploaded.resourceURL)); err != nil {
 		return "", err
 	}
 	if launched.Code != "" {
@@ -286,6 +327,24 @@ func (c *Client) transcribeAsyncTask(ctx context.Context, path, model string, op
 		return "", err
 	}
 	return c.collectAsyncTaskText(ctx, done)
+}
+
+func supportsLanguageHints(model string) bool {
+	key := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(key, "qwen-audio-3.0-asr-flash-filetrans") || strings.HasPrefix(key, "fun-asr") || key == "paraformer-v2" || strings.HasPrefix(key, "paraformer-v2-")
+}
+
+func supportsAsyncContext(model string) bool {
+	key := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(key, "qwen-audio-3.0-asr-flash-filetrans") || strings.HasPrefix(key, "fun-asr")
+}
+
+func asyncTaskHeaders(resourceURL string) map[string]string {
+	headers := map[string]string{"X-DashScope-Async": "enable"}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(resourceURL)), "oss://") {
+		headers["X-DashScope-OssResourceResolve"] = "enable"
+	}
+	return headers
 }
 
 func (c *Client) waitTask(ctx context.Context, taskID string) (asyncTaskResponse, error) {
@@ -665,8 +724,12 @@ func (c *Client) endpoint(path string) string {
 func modelFamily(model string) string {
 	key := strings.ToLower(strings.TrimSpace(model))
 	switch {
+	case strings.HasPrefix(key, "qwen-audio-3.0-asr-flash-filetrans"):
+		return "audio3-asr-filetrans"
+	case strings.HasPrefix(key, "qwen-audio-3.0-asr-flash"):
+		return "audio3-asr-flash"
 	case strings.HasPrefix(key, "fun-asr-flash"):
-		return "fun-asr-flash"
+		return "audio3-asr-flash"
 	case strings.HasPrefix(key, "fun-asr"):
 		return "fun-asr"
 	case strings.HasPrefix(key, "paraformer"):
@@ -676,6 +739,21 @@ func modelFamily(model string) string {
 	default:
 		return ""
 	}
+}
+
+func validateAudioFileSize(path, model string) error {
+	family := modelFamily(model)
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("读取音频分片信息失败: %w", err)
+	}
+	if family == "qwen3-asr-flash" || family == "audio3-asr-flash" {
+		return validateBase64AudioSize(info.Size())
+	}
+	if info.Size() > maxURLAudioSize {
+		return &permanentError{err: fmt.Errorf("URL 音频文件超过 2 GiB 限制（当前大小 %d 字节）", info.Size())}
+	}
+	return nil
 }
 
 func contentType(path string) string {
@@ -700,6 +778,37 @@ func audioFormat(path string) string {
 	default:
 		return ext
 	}
+}
+
+func audioDataURI(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("读取音频分片信息失败: %w", err)
+	}
+	if err := validateBase64AudioSize(info.Size()); err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("读取音频分片失败: %w", err)
+	}
+	if err := validateBase64AudioSize(int64(len(data))); err != nil {
+		return "", err
+	}
+	return "data:" + contentType(path) + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+func validateBase64AudioSize(rawSize int64) error {
+	if rawSize < 0 {
+		return &permanentError{err: errors.New("音频分片大小无效")}
+	}
+	// Base64 encodes each 3 input bytes as 4 output bytes. Since the limit is
+	// divisible by 4, this comparison also accounts for the final padding.
+	maxRawSize := maxBase64AudioSize / 4 * 3
+	if rawSize > maxRawSize {
+		return &permanentError{err: fmt.Errorf("Base64 编码后的音频数据超过 10 MiB 限制（原始分片大小 %d 字节）", rawSize)}
+	}
+	return nil
 }
 
 func extractText(output map[string]any) string {

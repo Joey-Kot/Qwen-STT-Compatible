@@ -18,9 +18,12 @@ func TestSampleRateMatchesModelPrefixWithoutAlias(t *testing.T) {
 		model string
 		want  int
 	}{
+		{model: "qwen-audio-3.0-asr-flash-filetrans", want: 16000},
+		{model: "qwen-audio-3.0-asr-flash", want: 16000},
 		{model: "qwen3-asr-flash-2025-09-08", want: 16000},
 		{model: "fun-asr-flash-2026-06-15", want: 16000},
 		{model: "fun-asr", want: 16000},
+		{model: "paraformer-v2", want: 16000},
 		{model: "paraformer-8k-v1", want: 8000},
 		{model: "paraformer-mtl-v1", want: 16000},
 	}
@@ -31,6 +34,25 @@ func TestSampleRateMatchesModelPrefixWithoutAlias(t *testing.T) {
 		}
 		if got != tt.want {
 			t.Fatalf("SampleRate(%q)=%d want %d", tt.model, got, tt.want)
+		}
+	}
+}
+
+func TestListIncludesAudio3AndFunASRFlash(t *testing.T) {
+	listed := make(map[string]bool)
+	for _, model := range List() {
+		listed[model] = true
+	}
+	for _, model := range []string{
+		"qwen-audio-3.0-asr-flash-filetrans",
+		"qwen-audio-3.0-asr-flash",
+		"fun-asr-2025-11-07",
+		"fun-asr-mtl",
+		"fun-asr-flash-2026-06-15",
+		"paraformer-v2",
+	} {
+		if !listed[model] {
+			t.Errorf("List() does not include %q", model)
 		}
 	}
 }

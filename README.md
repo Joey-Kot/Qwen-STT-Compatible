@@ -55,8 +55,8 @@ ASR_RETRY_MAX_DELAY="8.0"
 - 兼容 `POST /v1/audio/transcriptions`
 - 支持 Bearer Token 鉴权，`API_TOKEN` 可用逗号配置多个 token
 - 预处理链路：默认转 WAV、固定分片并发静音裁剪、合并、按静音区间并发导出和编码 ASR 分片；`SKIP_TRIM=true` 时，统一转 WAV 后直接按静音区间分片
-- 默认复刻 DashScope Python SDK 的临时 OSS 流程，也支持自建 WebDAV 作为分片存储
-- 支持 Qwen3-ASR-Flash、Fun-ASR-Flash、Fun-ASR、Paraformer 系列非实时模型，模型名原样透传给 DashScope
+- Qwen3-ASR-Flash、Qwen-Audio-3.0-ASR-Flash（非 Filetrans）、Fun-ASR-Flash 使用 Base64 Data URI 直接传入音频，并校验编码后的数据不超过 10 MiB；Qwen-Audio-3.0-ASR-Flash-Filetrans、Fun-ASR、Paraformer 使用 URL，分片文件不超过 2 GiB
+- 支持 Qwen-Audio-3.0-ASR-Flash、Qwen-Audio-3.0-ASR-Flash-Filetrans、Qwen3-ASR-Flash、Fun-ASR-Flash、Fun-ASR、Paraformer 系列非实时模型，模型名原样透传给 DashScope
 - 支持非流式 JSON 返回，也支持 `stream=true` 的伪 SSE 流式返回
 - 产物是单个可运行二进制文件
 
@@ -68,9 +68,9 @@ ASR_RETRY_MAX_DELAY="8.0"
 
 - `file`：音频文件
 - `model`：模型名，原样透传给 DashScope；支持清单见下方“支持模型”
-- `language`：可选，两字母语言码，如 `zh`、`en`
-- `prompt`：可选，作为 system prompt
-- `enable_lid`：可选，默认读取服务配置 `ENABLE_LID` / `--enable-lid`
+- `language`：可选，2–3 字母语言码，如 `zh`、`en`、`yue`
+- `prompt`：可选；Qwen3-ASR-Flash 使用 system 上下文，同步 Qwen-Audio-3.0-ASR-Flash / Fun-ASR-Flash 使用 `input_text` 消息，Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR 使用 `input.context`
+- `enable_lid`：兼容字段，当前支持的模型不会将其传给上游
 - `enable_itn`：可选，默认读取服务配置 `ENABLE_ITN` / `--enable-itn`
 - `stream`：可选，默认 `false`；设为 `true` 时返回 SSE
 
@@ -82,7 +82,6 @@ curl -X POST "http://localhost:8080/v1/audio/transcriptions" \
   -F "file=@demo.wav" \
   -F "model=qwen3-asr-flash" \
   -F "language=zh" \
-  -F "enable_lid=true" \
   -F "enable_itn=false"
 ```
 
@@ -108,10 +107,12 @@ data: [DONE]
 
 | 模型前缀 | 示例模型名 | 调用方式 |
 |---|---|---|
+| `qwen-audio-3.0-asr-flash-filetrans*` | `qwen-audio-3.0-asr-flash-filetrans` | `POST /services/audio/asr/transcription` 异步任务，使用 URL，轮询 `/tasks/<task_id>` |
+| `qwen-audio-3.0-asr-flash*` | `qwen-audio-3.0-asr-flash` | `POST /services/aigc/multimodal-generation/generation`，`input_audio` 请求结构 |
 | `qwen3-asr-flash*` | `qwen3-asr-flash`、`qwen3-asr-flash-2025-09-08` | `POST /services/aigc/multimodal-generation/generation`，Qwen3 ASR multimodal 请求结构 |
 | `fun-asr-flash*` | `fun-asr-flash-2026-06-15` | `POST /services/aigc/multimodal-generation/generation`，`input_audio` 请求结构 |
-| `fun-asr*` | `fun-asr` | `POST /services/audio/asr/transcription` 异步任务，轮询 `/tasks/<task_id>` |
-| `paraformer*` | `paraformer-v1` 等 Paraformer 全量模型名 | `POST /services/audio/asr/transcription` 异步任务，轮询 `/tasks/<task_id>` |
+| `fun-asr*` | `fun-asr`、`fun-asr-2025-11-07`、`fun-asr-mtl` | `POST /services/audio/asr/transcription` 异步任务，使用 URL，轮询 `/tasks/<task_id>` |
+| `paraformer*` | `paraformer-v2`、`paraformer-v1` 等 Paraformer 全量模型名 | `POST /services/audio/asr/transcription` 异步任务，轮询 `/tasks/<task_id>` |
 
 需要使用带日期或版本后缀的模型时，直接传完整模型名即可，例如 `qwen3-asr-flash-2025-09-08` 或 `fun-asr-flash-2026-06-15`。
 
@@ -150,12 +151,12 @@ ASR_RETRY_MAX_DELAY="8.0"
 如果使用百炼业务空间域名，将 `DASHSCOPE_HTTP_BASE_URL` 设置为 `https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/api/v1`。
 `MAX_UPLOAD_MB` 控制单个上传音频文件大小上限，默认 `500`，也可用启动参数 `--max-upload-mb` 覆盖。
 服务向 DashScope、OSS 和 WebDAV 发起的请求会优先协商 HTTP/2，但不复用 keep-alive 连接：每个请求都会新建并在完成后关闭其 TCP/TLS 连接。
-`WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 必须同时设置才会启用 WebDAV；未同时设置时使用 DashScope SDK 的内置临时 OSS。`WEBDAV_CREDENTIALS` 格式为 `user@password`，密码可以包含额外的 `@`。存储链路的工作方式、部署要求和取舍见下方“音频分片存储”。
+`WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 必须同时设置才会启用 WebDAV；未同时设置时，URL 输入模型使用 DashScope SDK 的内置临时 OSS。该配置不影响直接使用 Base64 Data URI 的 Qwen3-ASR-Flash、Qwen-Audio-3.0-ASR-Flash（非 Filetrans）、Fun-ASR-Flash。`WEBDAV_CREDENTIALS` 格式为 `user@password`，密码可以包含额外的 `@`。存储链路的工作方式、部署要求和取舍见下方“音频分片存储”。
 
-ASR 分片会显式输出为 `ogg` 容器、`libopus` 编码、`16000Hz`、`s16` 采样格式；`OUTPUT_BITRATE` / `--output-bitrate` 控制 Opus 码率，默认 `128k`。
+ASR 分片会统一输出为 `ogg` 容器和 `libopus` 编码，因此不会再按原始文件扩展名做模型格式白名单校验。采样率按模型路由归一化：`paraformer-8k*` 使用 `8000Hz`，其他当前支持的模型使用 `16000Hz`；`OUTPUT_BITRATE` / `--output-bitrate` 控制 Opus 码率，默认 `128k`。
 `SEGMENT_WORKERS` / `--segment-workers` 控制 ASR 分片导出和编码并发数，`0` 表示由预处理库按 CPU 自动选择；`LIBAV_CODEC_THREADS` / `--libav-codec-threads` 控制每条 libav pipeline 的 decoder/encoder 线程数，`0` 表示使用 libav 默认策略。显式调大时需要同时考虑 `FFMPEG_WORKS`，避免 Go worker 和 libav codec 线程叠加后过量并发。
 `SKIP_TRIM` / `--skip-trim` 默认为 `false`。设置为 `true`（也可使用 `1`）时，跳过固定切片静音裁剪和合并，统一转 WAV 后直接调用预处理库完成静音区间分片。
-`ENABLE_LID` 和 `ENABLE_ITN` 分别控制请求未显式传入 `enable_lid`、`enable_itn` 时的默认值；请求字段一旦传入，会覆盖服务配置默认值。
+`ENABLE_LID` / `enable_lid` 仅作为兼容配置保留，当前支持的模型不会将其传给上游。`ENABLE_ITN` 控制请求未显式传入 `enable_itn` 时的默认值；请求字段一旦传入，会覆盖服务配置默认值。
 生产部署建议用环境变量传入 `API_TOKEN` 和 `DASHSCOPE_API_KEY`，避免密钥出现在进程命令行里；本地测试也可以使用 `--api-token` 和 `--dashscope-api-key`。
 
 ## 本地构建
@@ -256,7 +257,7 @@ ENABLE_ITN="false" \
 | `--silent-interval` | `700ms` | `SILENT_INTERVAL` | 最短静音判定时长 |
 | `--padding` | `100ms` | `PADDING_LENGTH` | 非静音片段前后保留时长 |
 | `--output-bitrate` | `128k` | `OUTPUT_BITRATE` | ASR 分片输出音频码率 |
-| `--enable-lid` | `true` | `ENABLE_LID` | 请求未传 `enable_lid` 时的默认值，支持 `0/1` 或 `true/false` |
+| `--enable-lid` | `true` | `ENABLE_LID` | 兼容配置，当前支持的模型不会将其传给上游 |
 | `--enable-itn` | `false` | `ENABLE_ITN` | 请求未传 `enable_itn` 时的默认值，支持 `0/1` 或 `true/false` |
 | `--asr-retry-max-attempts` | `4` | `ASR_RETRY_MAX_ATTEMPTS` | ASR 调用最大尝试次数 |
 | `--asr-retry-initial-delay` | `500ms` | `ASR_RETRY_INITIAL_DELAY` | ASR 重试初始等待时间 |
@@ -338,7 +339,7 @@ docker run -d \
 
 ## 音频分片存储与上传
 
-转写前，服务会将处理后的音频切成 ASR 分片。分片可通过 DashScope 的临时 OSS 上传，也可通过自建 WebDAV 提供给百炼。
+转写前，服务会将处理后的音频切成 `ogg + Opus` ASR 分片。Qwen3-ASR-Flash、Qwen-Audio-3.0-ASR-Flash（非 Filetrans）、Fun-ASR-Flash 的分片会编码为 Base64 Data URI，编码后不得超过 10 MiB；Qwen-Audio-3.0-ASR-Flash-Filetrans、Fun-ASR、Paraformer 的分片通过 DashScope 临时 OSS 或自建 WebDAV URL 提供给百炼，文件不得超过 2 GiB。
 
 ### 推荐：内存盘模式
 
@@ -434,7 +435,7 @@ WEBDAV_CREDENTIALS="username@passwd"
 
 ### `qwen3-asr-flash*`
 
-DashScope Python SDK 的 `MultiModalConversation.call` 实际请求：
+使用 DashScope multimodal generation endpoint。每个分片会编码为 Base64 Data URI；Base64 编码结果必须小于或等于 10 MiB，超过时请求返回错误。`prompt` 仅作为识别上下文使用；为空时不发送 system 消息。
 
 - ASR 调用：`POST <DASHSCOPE_HTTP_BASE_URL>/services/aigc/multimodal-generation/generation`
 
@@ -445,14 +446,13 @@ DashScope Python SDK 的 `MultiModalConversation.call` 实际请求：
   "model": "qwen3-asr-flash",
   "input": {
     "messages": [
-      {"role": "system", "content": [{"text": ""}]},
-      {"role": "user", "content": [{"audio": "oss://..."}]}
+      {"role": "system", "content": [{"text": "专有词：通义千问"}]},
+      {"role": "user", "content": [{"audio": "data:audio/ogg;base64,..."}]}
     ]
   },
   "parameters": {
     "result_format": "message",
     "asr_options": {
-      "enable_lid": true,
       "enable_itn": false,
       "language": "zh"
     }
@@ -460,13 +460,13 @@ DashScope Python SDK 的 `MultiModalConversation.call` 实际请求：
 }
 ```
 
-### `fun-asr-flash*`
+### `qwen-audio-3.0-asr-flash*` / `fun-asr-flash*`
 
-使用 multimodal generation endpoint：
+使用 multimodal generation endpoint。每个分片会编码为 Base64 Data URI；Base64 编码结果必须小于或等于 10 MiB，超过时请求返回错误。
 
 ```json
 {
-  "model": "fun-asr-flash-2026-06-15",
+  "model": "qwen-audio-3.0-asr-flash",
   "input": {
     "messages": [
       {
@@ -475,7 +475,7 @@ DashScope Python SDK 的 `MultiModalConversation.call` 实际请求：
           {
             "type": "input_audio",
             "input_audio": {
-              "data": "oss://..."
+              "data": "data:audio/ogg;base64,..."
             }
           }
         ]
@@ -489,21 +489,29 @@ DashScope Python SDK 的 `MultiModalConversation.call` 实际请求：
 }
 ```
 
-### `fun-asr*` / `paraformer*`
+### `qwen-audio-3.0-asr-flash-filetrans*` / `fun-asr*` / `paraformer*`
 
 使用 `dashscope.audio.asr.Transcription.async_call` 同款异步任务：
 
 - 提交任务：`POST <DASHSCOPE_HTTP_BASE_URL>/services/audio/asr/transcription`
 - 轮询任务：`GET <DASHSCOPE_HTTP_BASE_URL>/tasks/<task_id>`
 - 子任务成功后下载 `transcription_url` 并提取文本
+- 这些大文件异步模型不使用 Base64，音频通过 HTTP/HTTPS 公网 URL 或 REST API 支持的临时 `oss://` URL 提供
+- `X-DashScope-OssResourceResolve: enable` 仅在使用临时 `oss://` URL 时发送，HTTP/HTTPS URL 不携带该请求头
+- `prompt` 会作为 `input.context` 中的 `input_text` 发送给 Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR；Paraformer 不发送上下文
+- `language_hints` 会发送给 Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR
+- `language_hints` 仅对 `paraformer-v2` 发送；Paraformer v1、8k、MTL 等模型不会携带该参数
 
 提交任务请求体：
 
 ```json
 {
-  "model": "fun-asr",
+  "model": "qwen-audio-3.0-asr-flash-filetrans",
   "input": {
-    "file_urls": ["oss://..."]
+    "file_urls": ["https://files.example.com/audio.ogg"],
+    "context": [
+      {"role": "user", "content": [{"type": "input_text", "text": "专有词：通义千问"}]}
+    ]
   },
   "parameters": {
     "language_hints": ["zh"]

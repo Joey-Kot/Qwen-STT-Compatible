@@ -22,6 +22,8 @@ type Route struct {
 }
 
 var routes = []Route{
+	{Prefix: "qwen-audio-3.0-asr-flash-filetrans", SampleRate: 16000},
+	{Prefix: "qwen-audio-3.0-asr-flash", SampleRate: 16000},
 	{Prefix: "qwen3-asr-flash", SampleRate: 16000},
 	{Prefix: "fun-asr-flash", SampleRate: 16000},
 	{Prefix: "fun-asr", SampleRate: 16000},
@@ -52,10 +54,17 @@ func SampleRate(model string) (int, error) {
 
 func List() []string {
 	return []string{
+		"qwen-audio-3.0-asr-flash-filetrans",
+		"qwen-audio-3.0-asr-flash",
 		"qwen3-asr-flash",
 		"qwen3-asr-flash-2025-09-08",
 		"fun-asr",
+		"fun-asr-2025-11-07",
+		"fun-asr-2025-08-25",
+		"fun-asr-mtl",
+		"fun-asr-mtl-2025-08-25",
 		"fun-asr-flash-2026-06-15",
+		"paraformer-v2",
 		"paraformer-v1",
 		"paraformer-8k-v1",
 		"paraformer-mtl-v1",

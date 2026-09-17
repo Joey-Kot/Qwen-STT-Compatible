@@ -33,6 +33,24 @@ func TestSanitizeLogValueEscapesControlCharacters(t *testing.T) {
 	}
 }
 
+func TestNormalizeLanguageCodeSupportsDocumentedThreeLetterCodes(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "ZH", want: "zh"},
+		{input: " yue ", want: "yue"},
+		{input: "fil", want: "fil"},
+		{input: "english", want: ""},
+		{input: "zh-CN", want: ""},
+	}
+	for _, tt := range tests {
+		if got := normalizeLanguageCode(tt.input); got != tt.want {
+			t.Errorf("normalizeLanguageCode(%q)=%q want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestCleanupTempDirsRemovesOnlyRequestDirs(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"request-a", "request-b"} {
