@@ -1,11 +1,18 @@
 // Copyright (C) 2026 Joey Kot
 // SPDX-License-Identifier: GPL-3.0-or-later
-use axum::{Json, Router, routing::post};
+use axum::{
+    Json, Router,
+    body::{Bytes, to_bytes},
+    extract::Request,
+    http::{Method, StatusCode},
+    response::IntoResponse,
+    routing::{any, post},
+};
 use clap::Parser;
 use qwen_stt_compatible::{
     audio,
     config::Config,
-    dashscope::BASE64_RAW_LIMIT,
+    dashscope::FLASH_FILE_LIMIT,
     httpapi::{App, router},
 };
 use serde_json::{Value, json};
@@ -40,7 +47,7 @@ async fn preprocess_speech_modes_and_no_speech() {
             work.clone(),
             16000,
             split,
-            BASE64_RAW_LIMIT,
+            FLASH_FILE_LIMIT,
         )
         .await
         .unwrap();
@@ -48,7 +55,7 @@ async fn preprocess_speech_modes_and_no_speech() {
         for path in paths {
             assert!(path.starts_with(work.path()));
             assert_eq!(path.extension().unwrap(), "ogg");
-            assert!(std::fs::metadata(path).unwrap().len() <= BASE64_RAW_LIMIT);
+            assert!(std::fs::metadata(path).unwrap().len() <= FLASH_FILE_LIMIT);
         }
     }
     let work = Arc::new(tempfile::tempdir().unwrap());
@@ -68,7 +75,7 @@ async fn preprocess_speech_modes_and_no_speech() {
     }
     writer.finalize().unwrap();
     assert!(
-        audio::prepare(&config, path, work, 16000, false, BASE64_RAW_LIMIT)
+        audio::prepare(&config, path, work, 16000, false, FLASH_FILE_LIMIT)
             .await
             .unwrap()
             .is_empty()
@@ -104,7 +111,7 @@ async fn multipart_segments_concurrency_order_and_sse() {
                     value["input"]["messages"][0]["content"][0]["audio"]
                         .as_str()
                         .unwrap()
-                        .starts_with("data:audio/ogg;base64,")
+                        .starts_with("http://")
                 );
                 let index = calls.fetch_add(1, Ordering::SeqCst);
                 let current = active.fetch_add(1, Ordering::SeqCst) + 1;
@@ -120,8 +127,12 @@ async fn multipart_segments_concurrency_order_and_sse() {
             }
         }),
     );
+    let mock = mock.merge(file_store());
     let mock_task = tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
     let mut config = cfg();
+    config.webdav_url = format!("{upstream}/dav");
+    config.base64_first = false;
+    config.webdav_credentials = "user@password".into();
     config.dashscope_base_url = upstream;
     config.enable_itn = true;
     let app = App::new(config).unwrap();
@@ -192,7 +203,6 @@ async fn multipart_segments_concurrency_order_and_sse() {
 
 #[tokio::test]
 async fn recognition_merges_source_order_despite_out_of_order_completion() {
-    use base64::{Engine, engine::general_purpose::STANDARD};
     use qwen_stt_compatible::{dashscope::Options, httpapi::recognize};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -202,17 +212,28 @@ async fn recognition_merges_source_order_despite_out_of_order_completion() {
             let uri = v["input"]["messages"][0]["content"][0]["audio"]
                 .as_str()
                 .unwrap();
-            let bytes = STANDARD.decode(uri.split_once(',').unwrap().1).unwrap();
-            let text = String::from_utf8(bytes).unwrap();
+            assert!(uri.starts_with("http://"));
+            let text = reqwest::get(uri)
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
             if text == "first" {
                 tokio::time::sleep(Duration::from_millis(80)).await;
             }
             Json(json!({"output":{"text":text}}))
         }),
     );
+    let mock = mock.merge(file_store());
     let task = tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
     let mut config = cfg();
     config.dashscope_base_url = format!("http://{address}");
+    config.webdav_url = format!("http://{address}/dav");
+    config.base64_first = false;
+    config.webdav_credentials = "user@password".into();
     let app = App::new(config).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let mut paths = Vec::new();
@@ -228,4 +249,39 @@ async fn recognition_merges_source_order_despite_out_of_order_completion() {
         "firstsecondthird"
     );
     task.abort();
+}
+
+fn file_store() -> Router {
+    let files = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+        String,
+        Bytes,
+    >::new()));
+    Router::new().route(
+        "/dav/{file}",
+        any(move |req: Request| {
+            let files = files.clone();
+            async move {
+                let path = req.uri().path().to_owned();
+                match *req.method() {
+                    Method::PUT => {
+                        let bytes = to_bytes(req.into_body(), 16 << 20).await.unwrap();
+                        files.lock().unwrap().insert(path, bytes);
+                        StatusCode::CREATED.into_response()
+                    }
+                    Method::GET => files
+                        .lock()
+                        .unwrap()
+                        .get(&path)
+                        .cloned()
+                        .unwrap()
+                        .into_response(),
+                    Method::DELETE => {
+                        files.lock().unwrap().remove(&path);
+                        StatusCode::NO_CONTENT.into_response()
+                    }
+                    _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+                }
+            }
+        }),
+    )
 }

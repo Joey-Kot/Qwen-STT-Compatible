@@ -327,11 +327,7 @@ async fn transcriptions(
             .map(|text| Json(json!({"status":"success","text":text})).into_response())
             .ok_or_else(|| ApiError::server("missing final result"));
     }
-    let max_bytes = if route.mode == Mode::Http {
-        crate::dashscope::BASE64_RAW_LIMIT
-    } else {
-        crate::dashscope::URL_LIMIT
-    };
+    let max_bytes = crate::dashscope::file_limit(route.mode, app.cfg.base64_first);
     let segments = audio::prepare(
         &app.cfg,
         input,

@@ -36,6 +36,8 @@ fn help_excludes_removed_options_and_secrets() {
         "--output-bitrate",
         "--libav-codec-threads",
         "--skip-trim",
+        "--base64-first",
+        "BASE64_FIRST",
     ] {
         assert!(help.contains(kept), "{kept}");
     }

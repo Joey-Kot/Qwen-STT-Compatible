@@ -32,7 +32,7 @@ Qwen STT Compatible is an OpenAI-style speech transcription service written in R
 ### Audio Processing and Uploads
 
 - The Rust audio library detects speech and exports bounded Ogg/Opus segments. `SKIP_TRIM=true` or non-realtime `stream=true` retains internal pauses. The service recognizes the returned files concurrently and merges results in their original order.
-- Non-realtime segments use Ogg + Opus and are converted to the model's supported sample rate; Base64 and URL uploads enforce their respective size limits, as described in [Audio Segment Storage and Uploads](#audio-segment-storage-and-uploads)
+- Non-realtime segments use Ogg + Opus at the model's sample rate. `BASE64_FIRST` selects Base64 or uploaded URLs for synchronous Flash models; asynchronous models always use URLs. See [Audio Segment Storage and Uploads](#audio-segment-storage-and-uploads).
 - Realtime audio uses continuous PCM transmission without silence trimming, separate recognition tasks, or public audio URLs
 
 ### Builds and Deployment
@@ -200,7 +200,7 @@ After VAD segmentation, the 100 ms minimum for manual commit counts only audio a
 ##### Audio Input
 
 - WebSocket input supports only the 24000 Hz mono PCM16 format described above, not G.711.
-- Realtime audio totals are not subject to the non-realtime Base64 10 MiB or URL 2 GiB limits; the file endpoint remains subject to `MAX_UPLOAD_MB`.
+- Realtime audio totals are not subject to non-realtime segment size limits; the file endpoint remains subject to `MAX_UPLOAD_MB`.
 - The Qwen upstream non-VAD limit for a single Base64 `append.audio` value is 15 MiB. The service actually splits audio into PCM chunks of at most 3200 bytes and checks their encoded size; client messages remain subject to the 1 MiB limit below.
 
 ##### Session Configuration
@@ -244,7 +244,7 @@ The service does not translate model aliases. It passes `model` unchanged to Das
 | `paraformer-realtime-v2*` | `paraformer-realtime-v2` | Realtime WebSocket recognition, binary PCM, 24000 Hz upstream |
 | `paraformer-realtime-v1*` | `paraformer-realtime-v1` | Realtime WebSocket recognition, fixed 16000 Hz upstream |
 | `paraformer-realtime-8k-v2*` / `paraformer-realtime-8k-v1*` | `paraformer-realtime-8k-v2`, `paraformer-realtime-8k-v1` | Realtime WebSocket recognition, fixed 8000 Hz upstream |
-| `qwen3-asr-flash-filetrans*` | `qwen3-asr-flash-filetrans` | `POST /services/audio/asr/transcription`, asynchronous task using a public URL; requires WebDAV in this service |
+| `qwen3-asr-flash-filetrans*` | `qwen3-asr-flash-filetrans` | `POST /services/audio/asr/transcription`, asynchronous task using OSS or WebDAV URLs |
 | `qwen-audio-3.0-asr-flash-filetrans*` | `qwen-audio-3.0-asr-flash-filetrans` | `POST /services/audio/asr/transcription`, asynchronous URL-based task, polling `/tasks/<task_id>` |
 | `qwen-audio-3.0-asr-flash*` | `qwen-audio-3.0-asr-flash` | `POST /services/aigc/multimodal-generation/generation`, `input_audio` request structure |
 | `qwen3-asr-flash*` | `qwen3-asr-flash`, `qwen3-asr-flash-2025-09-08` | `POST /services/aigc/multimodal-generation/generation`, Qwen3 ASR multimodal request structure |
@@ -288,6 +288,7 @@ REALTIME_IDLE_TIMEOUT_SECONDS="120"
 API_CONCURRENCY="10"
 API_SEGMENT_LENGTH="175"
 SKIP_TRIM="false"
+BASE64_FIRST="true"
 LIBAV_CODEC_THREADS="1"
 PADDING_LENGTH="100"
 VAD_START_THRESHOLD="0.6"
@@ -317,9 +318,9 @@ The HTTP endpoint and the two WebSocket endpoints are configured independently; 
 ### Uploads and Storage
 
 - `MAX_UPLOAD_MB` limits the size of each uploaded audio file. It defaults to `500` MiB and can be overridden with `--max-upload-mb`.
-- WebDAV is enabled only when both `WEBDAV_URL` and `WEBDAV_CREDENTIALS` are set. Otherwise, URL-input models use the built-in DashScope temporary OSS flow.
+- `BASE64_FIRST` defaults to `true`: only non-realtime synchronous Qwen3-ASR-Flash, Qwen-Audio-3.0-ASR-Flash, and Fun-ASR-Flash use Base64. Set it to `false` to use URLs for these models too. Asynchronous Filetrans, Fun-ASR, and Paraformer models always use URLs.
+- URL input uses WebDAV when both `WEBDAV_URL` and `WEBDAV_CREDENTIALS` are configured; otherwise it uses DashScope temporary OSS.
 - `WEBDAV_CREDENTIALS` uses the format `user@password`; the password may contain additional `@` characters.
-- WebDAV settings do not affect Qwen3-ASR-Flash, Qwen-Audio-3.0-ASR-Flash (excluding Filetrans), or Fun-ASR-Flash, which use Base64 Data URIs directly.
 
 See [Audio Segment Storage and Uploads](#audio-segment-storage-and-uploads) for storage behavior and deployment requirements.
 
@@ -453,6 +454,7 @@ Command-line options:
 | `--api-concurrency` | `10` | `API_CONCURRENCY` | Concurrent non-realtime upstream ASR requests; excess requests are queued |
 | `--api-segment-length` | `175s` | `API_SEGMENT_LENGTH` | Maximum ASR segment duration |
 | `--skip-trim` | `false` | `SKIP_TRIM` | Use `split` to retain internal pauses; accepts `0/1` or `true/false`; forced on for non-realtime `stream=true` |
+| `--base64-first` | `true` | `BASE64_FIRST` | Use Base64 for synchronous Flash models; false uses URLs. Asynchronous models always use URLs. Accepts `0/1` or `true/false` |
 | `--libav-codec-threads` | `1` | `LIBAV_CODEC_THREADS` | Native encoder threads; `0` allows automatic selection |
 | `--padding` | `100ms` | `PADDING_LENGTH` | Padding retained before and after non-silent intervals |
 | `--vad-start-threshold` | `0.6` | `VAD_START_THRESHOLD` | VAD speech onset threshold for non-realtime preprocessing; `0.5`–`1.0` inclusive, higher is stricter |
@@ -475,7 +477,7 @@ Logs include preprocessing status, segment count, input/output durations, and up
 
 ## Audio Segment Storage and Uploads
 
-This section applies only to non-realtime models. Before transcription, the service splits processed audio into `ogg + Opus` ASR segments. Segments for Qwen3-ASR-Flash, Qwen-Audio-3.0-ASR-Flash, and Fun-ASR-Flash are encoded as Base64 Data URIs and must not exceed 10 MiB after encoding. Segments for Qwen-Audio-3.0-ASR-Flash-Filetrans, Fun-ASR, and Paraformer are provided to Model Studio through DashScope temporary OSS or self-hosted WebDAV URLs, with a 2 GiB file limit. Oversized segments return an error directly, without recognition retries.
+This section applies only to non-realtime models. Audio is split into `ogg + Opus` segments. With `BASE64_FIRST=true`, only the three synchronous Flash families above use Base64 Data URIs; raw segments are limited to 7.5 MiB so encoded data stays within 10 MiB. When disabled, synchronous models use OSS / WebDAV URLs with a 10 MiB raw-file limit. Asynchronous models always use URLs with a 2 GiB limit. Oversized segments fail before recognition retries.
 
 ### Recommended: RAM Disk
 
@@ -670,7 +672,7 @@ See the upstream [Qwen-ASR Realtime WebSocket API](https://docs.bailian.console.
 
 ### `qwen3-asr-flash*`
 
-This section covers only non-realtime Flash models, excluding Realtime. It uses the DashScope multimodal generation endpoint. Each segment is encoded as a Base64 Data URI; the Base64-encoded data must be at most 10 MiB, otherwise the request returns an error. `prompt` is used only as recognition context; no system message is sent when it is empty.
+This section covers only non-realtime Flash models, excluding Realtime. It uses the DashScope multimodal generation endpoint. With `BASE64_FIRST=true`, `audio` contains a Base64 Data URI; otherwise it contains the URL returned by OSS or WebDAV upload. For `oss://` URLs, send `X-DashScope-OssResourceResolve: enable`. `prompt` provides recognition context; omit the system message when empty.
 
 - ASR call: `POST <DASHSCOPE_HTTP_BASE_URL>/services/aigc/multimodal-generation/generation`
 
@@ -682,7 +684,7 @@ Core request structure:
   "input": {
     "messages": [
       {"role": "system", "content": [{"text": "Terminology: Qwen"}]},
-      {"role": "user", "content": [{"audio": "data:audio/ogg;base64,..."}]}
+      {"role": "user", "content": [{"audio": "https://files.example.com/audio.ogg"}]}
     ]
   },
   "parameters": {
@@ -697,7 +699,7 @@ Core request structure:
 
 ### `qwen-audio-3.0-asr-flash*` / `fun-asr-flash*`
 
-This section covers only non-realtime Flash models, excluding Streaming, Realtime, and Filetrans. It uses the multimodal generation endpoint. Each segment is encoded as a Base64 Data URI; the Base64-encoded data must be at most 10 MiB, otherwise the request returns an error.
+This section covers only non-realtime Flash models, excluding Streaming, Realtime, and Filetrans. The multimodal generation endpoint receives a Base64 Data URI in `input_audio.data` when `BASE64_FIRST=true`, or an OSS / WebDAV URL when disabled. For `oss://` URLs, send `X-DashScope-OssResourceResolve: enable`.
 
 ```json
 {
@@ -710,7 +712,7 @@ This section covers only non-realtime Flash models, excluding Streaming, Realtim
           {
             "type": "input_audio",
             "input_audio": {
-              "data": "data:audio/ogg;base64,..."
+              "data": "https://files.example.com/audio.ogg"
             }
           }
         ]
@@ -726,7 +728,7 @@ This section covers only non-realtime Flash models, excluding Streaming, Realtim
 
 ### `qwen3-asr-flash-filetrans*`
 
-Submit an asynchronous task to `POST <DASHSCOPE_HTTP_BASE_URL>/services/audio/asr/transcription` and poll `/tasks/<task_id>`. This model requires a public HTTP/HTTPS audio URL; configure WebDAV in this service instead of temporary `oss://` uploads. On success, download the transcript from `output.result.transcription_url`.
+Submit an asynchronous task to `POST <DASHSCOPE_HTTP_BASE_URL>/services/audio/asr/transcription` and poll `/tasks/<task_id>`. Audio uses the shared OSS / WebDAV upload flow, with its URL in `input.file_url`; `oss://` URLs require `X-DashScope-OssResourceResolve: enable`. On success, download the transcript from `output.result.transcription_url`.
 
 Send `enable_itn` inside `parameters`. Map `language` to `parameters.language` and `prompt` to `parameters.corpus.text`. Preprocessing produces mono audio, so `channel_id` is `[0]`.
 

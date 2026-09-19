@@ -32,7 +32,7 @@ Qwen STT Compatible 是一个 Rust 实现的 OpenAI 风格语音转写服务。�
 ### 音频处理与上传
 
 - 非实时音频由 Rust 音频库检测语音并导出符合限制的 Ogg/Opus 分片；`SKIP_TRIM=true` 或非实时 `stream=true` 保留内部停顿。服务并发识别返回的文件，并按原始顺序合并结果。
-- 非实时分片统一使用 Ogg + Opus，按模型支持的采样率转换；支持 Base64 和 URL 上传，并校验对应的音频大小限制，详见[音频分片存储与上传](#音频分片存储与上传)
+- 非实时分片统一使用 Ogg + Opus，按模型采样率转换；`BASE64_FIRST` 控制同步 Flash 型号使用 Base64 或上传 URL，异步型号始终使用 URL，详见[音频分片存储与上传](#音频分片存储与上传)。
 - 实时音频使用连续 PCM 传输，不裁剪静音、不拆成独立识别任务，也不需要音频公网 URL
 
 ### 构建与部署
@@ -200,7 +200,7 @@ VAD 断句后，手动提交的 100 ms 下限按已确认语音边界之后的�
 ##### 音频输入
 
 - WebSocket 仅支持上述 24000 Hz、单声道 PCM16 输入，不支持 G.711。
-- 实时音频总大小不套用非实时 Base64 10 MiB 或 URL 2 GiB 限制；文件入口仍受 `MAX_UPLOAD_MB` 限制。
+- 实时音频总大小不套用非实时分片大小限制；文件入口仍受 `MAX_UPLOAD_MB` 限制。
 - Qwen 上游非 VAD 单次 `append.audio` 的 Base64 上限为 15 MiB。服务实际拆为最多 3200 字节 PCM 的小块并校验编码后大小；客户端消息仍受下表的 1 MiB 限制。
 
 ##### 会话配置
@@ -244,7 +244,7 @@ VAD 断句后，手动提交的 100 ms 下限按已确认语音边界之后的�
 | `paraformer-realtime-v2*` | `paraformer-realtime-v2` | WebSocket 实时识别，二进制 PCM，上游使用 24000 Hz |
 | `paraformer-realtime-v1*` | `paraformer-realtime-v1` | WebSocket 实时识别，上游固定 16000 Hz |
 | `paraformer-realtime-8k-v2*` / `paraformer-realtime-8k-v1*` | `paraformer-realtime-8k-v2`、`paraformer-realtime-8k-v1` | WebSocket 实时识别，上游固定 8000 Hz |
-| `qwen3-asr-flash-filetrans*` | `qwen3-asr-flash-filetrans` | `POST /services/audio/asr/transcription` 异步任务，使用公网 URL；本服务需配置 WebDAV |
+| `qwen3-asr-flash-filetrans*` | `qwen3-asr-flash-filetrans` | `POST /services/audio/asr/transcription` 异步任务，使用 OSS 或 WebDAV URL |
 | `qwen-audio-3.0-asr-flash-filetrans*` | `qwen-audio-3.0-asr-flash-filetrans` | `POST /services/audio/asr/transcription` 异步任务，使用 URL，轮询 `/tasks/<task_id>` |
 | `qwen-audio-3.0-asr-flash*` | `qwen-audio-3.0-asr-flash` | `POST /services/aigc/multimodal-generation/generation`，`input_audio` 请求结构 |
 | `qwen3-asr-flash*` | `qwen3-asr-flash`、`qwen3-asr-flash-2025-09-08` | `POST /services/aigc/multimodal-generation/generation`，Qwen3 ASR multimodal 请求结构 |
@@ -288,6 +288,7 @@ REALTIME_IDLE_TIMEOUT_SECONDS="120"
 API_CONCURRENCY="10"
 API_SEGMENT_LENGTH="175"
 SKIP_TRIM="false"
+BASE64_FIRST="true"
 LIBAV_CODEC_THREADS="1"
 PADDING_LENGTH="100"
 VAD_START_THRESHOLD="0.6"
@@ -317,9 +318,9 @@ HTTP 和两个 WebSocket 地址独立配置，不会相互推导。使用百炼�
 ### 上传与存储
 
 - `MAX_UPLOAD_MB` 控制单个上传音频文件的大小上限，默认 `500` MiB，可用 `--max-upload-mb` 覆盖。
-- `WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 同时设置时启用 WebDAV；否则，URL 输入模型使用 内置 DashScope 临时 OSS 流程。
+- `BASE64_FIRST` 默认 `true`：仅非实时同步 Qwen3-ASR-Flash、Qwen-Audio-3.0-ASR-Flash、Fun-ASR-Flash 使用 Base64；设为 `false` 后，这些型号也使用 URL。Filetrans、Fun-ASR、Paraformer 等异步型号始终使用 URL，不受该开关影响。
+- 走 URL 时，`WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 同时设置则使用 WebDAV，否则使用内置 DashScope 临时 OSS 上传。
 - `WEBDAV_CREDENTIALS` 格式为 `user@password`，密码可以包含额外的 `@`。
-- WebDAV 配置不影响直接使用 Base64 Data URI 的 Qwen3-ASR-Flash、Qwen-Audio-3.0-ASR-Flash（非 Filetrans）和 Fun-ASR-Flash。
 
 存储链路的工作方式与部署要求见[音频分片存储与上传](#音频分片存储与上传)。
 
@@ -453,6 +454,7 @@ ENABLE_ITN="false" \
 | `--api-concurrency` | `10` | `API_CONCURRENCY` | 非实时 ASR 上游并发请求数，超出后排队 |
 | `--api-segment-length` | `175s` | `API_SEGMENT_LENGTH` | 单个 ASR 分片最大时长 |
 | `--skip-trim` | `false` | `SKIP_TRIM` | 使用 `split` 模式保留内部停顿；支持 `0/1` 或 `true/false`，非实时 `stream=true` 强制启用 |
+| `--base64-first` | `true` | `BASE64_FIRST` | 同步 Flash 型号使用 Base64；关闭后走 URL，异步型号始终走 URL；支持 `0/1` 或 `true/false` |
 | `--libav-codec-threads` | `1` | `LIBAV_CODEC_THREADS` | 原生编码线程数；`0` 允许自动选择 |
 | `--padding` | `100ms` | `PADDING_LENGTH` | 非静音片段前后保留时长 |
 | `--vad-start-threshold` | `0.6` | `VAD_START_THRESHOLD` | 非实时音频预处理的 VAD 启动阈值，范围 `0.5`–`1.0`（含边界）；越高越严格 |
@@ -475,7 +477,7 @@ Release packages include the executable, `README.md`, `LICENSE`, `NOTICE`,
 
 ## 音频分片存储与上传
 
-本节仅适用于非实时模型。转写前，服务会将处理后的音频切成 `ogg + Opus` ASR 分片。Qwen3-ASR-Flash、Qwen-Audio-3.0-ASR-Flash、Fun-ASR-Flash 的分片会编码为 Base64 Data URI，编码后不得超过 10 MiB；Qwen-Audio-3.0-ASR-Flash-Filetrans、Fun-ASR、Paraformer 的分片通过 DashScope 临时 OSS 或自建 WebDAV URL 提供给百炼，文件不得超过 2 GiB。大小超限直接返回错误，不进入识别重试。
+本节仅适用于非实时模型。处理后的音频切成 `ogg + Opus` 分片。`BASE64_FIRST=true` 时，仅上述三个同步 Flash 系列使用 Base64 Data URI，并将原始分片限制为 7.5 MiB，保证 Base64 编码结果不超过 10 MiB；关闭后同步型号通过 OSS / WebDAV URL 传入，原始分片上限为 10 MiB。异步型号始终走 URL，单片上限为 2 GiB。大小超限直接返回错误，不进入识别重试。
 
 ### 推荐：内存盘模式
 
@@ -670,7 +672,7 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
 
 ### `qwen3-asr-flash*`
 
-本节仅指非实时 Flash 型号，不包括 Realtime。使用 DashScope multimodal generation endpoint。每个分片会编码为 Base64 Data URI；Base64 编码结果必须小于或等于 10 MiB，超过时请求返回错误。`prompt` 仅作为识别上下文使用；为空时不发送 system 消息。
+本节仅指非实时 Flash 型号，不包括 Realtime。使用 DashScope multimodal generation endpoint。`BASE64_FIRST=true` 时将 Base64 Data URI 填入 `audio`；关闭后上传到 OSS 或 WebDAV，将 URL 填入同一字段；使用 `oss://` 时附带 `X-DashScope-OssResourceResolve: enable`。`prompt` 仅作为识别上下文使用；为空时不发送 system 消息。
 
 - ASR 调用：`POST <DASHSCOPE_HTTP_BASE_URL>/services/aigc/multimodal-generation/generation`
 
@@ -682,7 +684,7 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
   "input": {
     "messages": [
       {"role": "system", "content": [{"text": "专有词：通义千问"}]},
-      {"role": "user", "content": [{"audio": "data:audio/ogg;base64,..."}]}
+      {"role": "user", "content": [{"audio": "https://files.example.com/audio.ogg"}]}
     ]
   },
   "parameters": {
@@ -697,7 +699,7 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
 
 ### `qwen-audio-3.0-asr-flash*` / `fun-asr-flash*`
 
-本节仅指非实时 Flash 型号，不包括 Streaming、Realtime 或 Filetrans。使用 multimodal generation endpoint。每个分片会编码为 Base64 Data URI；Base64 编码结果必须小于或等于 10 MiB，超过时请求返回错误。
+本节仅指非实时 Flash 型号，不包括 Streaming、Realtime 或 Filetrans。使用 multimodal generation endpoint。`BASE64_FIRST=true` 时将 Base64 Data URI 填入 `input_audio.data`；关闭后上传到 OSS 或 WebDAV，将 URL 填入同一字段；使用 `oss://` 时附带 `X-DashScope-OssResourceResolve: enable`。
 
 ```json
 {
@@ -710,7 +712,7 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
           {
             "type": "input_audio",
             "input_audio": {
-              "data": "data:audio/ogg;base64,..."
+              "data": "https://files.example.com/audio.ogg"
             }
           }
         ]
@@ -726,7 +728,7 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
 
 ### `qwen3-asr-flash-filetrans*`
 
-使用 `POST <DASHSCOPE_HTTP_BASE_URL>/services/audio/asr/transcription` 提交异步任务，并通过 `/tasks/<task_id>` 轮询。该模型需要公网 HTTP/HTTPS 音频 URL，本服务需配置 WebDAV，不使用临时 `oss://` 上传。任务成功后读取 `output.result.transcription_url` 并下载文本结果。
+使用 `POST <DASHSCOPE_HTTP_BASE_URL>/services/audio/asr/transcription` 提交异步任务，并通过 `/tasks/<task_id>` 轮询。音频复用统一的 OSS / WebDAV 上传处理，URL 填入 `input.file_url`；使用 `oss://` 时附带 `X-DashScope-OssResourceResolve: enable`。任务成功后读取 `output.result.transcription_url` 并下载文本结果。
 
 `enable_itn` 位于 `parameters` 中；`language` 映射为 `parameters.language`，`prompt` 映射为 `parameters.corpus.text`。预处理输出为单声道，因此 `channel_id` 固定为 `[0]`。
 

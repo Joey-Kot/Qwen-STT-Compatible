@@ -39,6 +39,9 @@ pub struct Config {
     pub api_segment_length: Duration,
     #[arg(long, env = "SKIP_TRIM", default_value = "false", value_parser = boolean, action = clap::ArgAction::Set)]
     pub skip_trim: bool,
+    /// Use Base64 for synchronous Flash models; asynchronous models always use URLs.
+    #[arg(long, env = "BASE64_FIRST", default_value = "true", value_parser = boolean, action = clap::ArgAction::Set)]
+    pub base64_first: bool,
     #[arg(long, env = "LIBAV_CODEC_THREADS", default_value_t = 1)]
     pub libav_codec_threads: u16,
     #[arg(long, env = "PADDING_LENGTH", default_value = "100", value_parser = milliseconds)]

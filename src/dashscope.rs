@@ -13,8 +13,16 @@ use reqwest::{
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
 
-pub const BASE64_RAW_LIMIT: u64 = (10 << 20) / 4 * 3;
+pub const FLASH_FILE_LIMIT: u64 = 10 << 20;
+pub const BASE64_RAW_LIMIT: u64 = FLASH_FILE_LIMIT / 4 * 3;
 pub const URL_LIMIT: u64 = 2 << 30;
+pub fn file_limit(mode: Mode, base64_first: bool) -> u64 {
+    match mode {
+        Mode::Http if base64_first => BASE64_RAW_LIMIT,
+        Mode::Http => FLASH_FILE_LIMIT,
+        _ => URL_LIMIT,
+    }
+}
 #[derive(Clone)]
 pub struct DashScope {
     pub http: Client,
@@ -72,11 +80,7 @@ impl DashScope {
         );
         let size = tokio::fs::metadata(path).await?.len();
         ensure!(
-            size <= if route.mode == Mode::Http {
-                BASE64_RAW_LIMIT
-            } else {
-                URL_LIMIT
-            },
+            size <= file_limit(route.mode, self.cfg.base64_first),
             "audio exceeds upstream size limit"
         );
         let mut delay = self.cfg.asr_retry_initial_delay;
@@ -100,16 +104,24 @@ impl DashScope {
         unreachable!()
     }
     async fn flash(&self, path: &Path, model: &str, o: &Options) -> Result<String> {
-        let bytes = tokio::fs::read(path).await?;
-        ensure!(
-            bytes.len() as u64 <= BASE64_RAW_LIMIT,
-            "Base64 audio exceeds 10 MiB"
-        );
-        let data = format!(
-            "data:{};base64,{}",
-            content_type(path),
-            STANDARD.encode(bytes)
-        );
+        let (data, cleanup) = if self.cfg.base64_first {
+            let bytes = tokio::fs::read(path).await?;
+            ensure!(
+                bytes.len() as u64 <= BASE64_RAW_LIMIT,
+                "Base64 audio exceeds 10 MiB"
+            );
+            (
+                format!(
+                    "data:{};base64,{}",
+                    content_type(path),
+                    STANDARD.encode(bytes)
+                ),
+                None,
+            )
+        } else {
+            self.upload(path, model).await?
+        };
+        let _cleanup = cleanup;
         let qwen = model.to_ascii_lowercase().starts_with("qwen3-asr-flash");
         let mut messages = Vec::new();
         if !o.prompt.trim().is_empty() {
@@ -145,6 +157,9 @@ impl DashScope {
         if !qwen {
             request = request.header("X-DashScope-SSE", "disable");
         }
+        if data.starts_with("oss://") {
+            request = request.header("X-DashScope-OssResourceResolve", "enable");
+        }
         let response = json_response(request).await?;
         let text = extract_flash(&response["output"]);
         Ok(nonempty(text))
@@ -154,11 +169,6 @@ impl DashScope {
             .trim()
             .to_ascii_lowercase()
             .starts_with("qwen3-asr-flash-filetrans");
-        ensure!(
-            !qwen_file
-                || (!self.cfg.webdav_url.is_empty() && !self.cfg.webdav_credentials.is_empty()),
-            "qwen3-asr-flash-filetrans requires a public audio URL; configure WebDAV upload"
-        );
         let (url, cleanup) = self.upload(path, model).await?;
         let _cleanup = cleanup;
         let key = model.trim().to_ascii_lowercase();
