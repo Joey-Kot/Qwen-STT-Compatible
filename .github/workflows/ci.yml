@@ -1,332 +1,127 @@
 name: CI/CD
-
 on:
   push:
-    branches:
-      - main
-      - dev
+    branches: [main, dev]
   pull_request:
   workflow_dispatch:
-
 permissions:
-  contents: write
-
+  contents: read
 env:
-  BINARY_NAME: qwen-stt-compatible
-  GO_VERSION: "1.26.4"
-
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.98.1"
 jobs:
-  test:
-    name: Go checks
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Check formatting
-        run: test -z "$(gofmt -l cmd internal)"
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Run tests
-        run: go test ./...
-
-      - name: Check third-party notices
-        run: |
-          test -s NOTICE
-          test -s THIRD_PARTY_NOTICES.md
-          grep -qi 'ASR-Audio-Preprocess' THIRD_PARTY_NOTICES.md
-          grep -qi 'FFmpeg' THIRD_PARTY_NOTICES.md
-          grep -qi 'Opus' THIRD_PARTY_NOTICES.md
-          test -s THIRD_PARTY_LICENSES/FFmpeg-LGPL-2.1-or-later.txt
-          grep -qi 'GNU LESSER GENERAL PUBLIC LICENSE' THIRD_PARTY_LICENSES/FFmpeg-LGPL-2.1-or-later.txt
-          test -s THIRD_PARTY_LICENSES/Opus-BSD-3-Clause.txt
-          grep -qi 'Redistribution and use in source and binary forms' THIRD_PARTY_LICENSES/Opus-BSD-3-Clause.txt
-
-  build-linux:
-    name: Build Linux ${{ matrix.arch }}
+  build:
+    name: Rust ${{ matrix.platform }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    needs: test
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
-            goarch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            goarch: arm64
-            runner: ubuntu-24.04-arm
+          - { runner: ubuntu-24.04, platform: linux, arch: amd64, target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-24.04-arm, platform: linux, arch: arm64, target: aarch64-unknown-linux-gnu }
+          - { runner: macos-15-intel, platform: darwin, arch: amd64, target: x86_64-apple-darwin }
+          - { runner: macos-15, platform: darwin, arch: arm64, target: aarch64-apple-darwin }
+          - { runner: windows-2022, platform: windows, arch: amd64, target: x86_64-pc-windows-gnu, msystem: UCRT64, prefix: mingw-w64-ucrt-x86_64, compiler: gcc, ffmpeg_arch: x86_64, host: x86_64-w64-mingw32, opus_flags: "" }
+          - { runner: windows-11-arm, platform: windows, arch: arm64, target: aarch64-pc-windows-gnullvm, msystem: CLANGARM64, prefix: mingw-w64-clang-aarch64, compiler: clang, ffmpeg_arch: aarch64, host: aarch64-w64-mingw32, opus_flags: "--disable-rtcd --disable-asm" }
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Install build tools
+      - uses: actions/checkout@v4
+      - name: Linux build tools
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential autoconf automake libtool pkg-config curl xz-utils tar
-
-      - name: Build static audio dependencies
-        run: ./scripts/bootstrap-static-audio-deps.sh
-        env:
-          JOBS: 2
-
-      - name: Verify FFmpeg filters
-        run: grep -q '#define CONFIG_ASPLIT_FILTER 1' third_party/src/ffmpeg-*/config_components.h
-
-      - name: Build binary
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config curl xz-utils tar ffmpeg
+      - name: macOS build tools
+        if: runner.os == 'macOS'
         run: |
-          mkdir -p dist
-          CGO_ENABLED=1 \
-          GOOS=linux \
-          GOARCH="${{ matrix.goarch }}" \
-          PKG_CONFIG_PATH="$PWD/third_party/ffmpeg-audio/lib/pkgconfig" \
-          PKG_CONFIG="pkg-config --static" \
-          go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-static'" -o "dist/${BINARY_NAME}" ./cmd/server
-
-      - name: Package binary
-        run: |
-          artifact="${BINARY_NAME}-linux-${{ matrix.arch }}.tar.gz"
-          cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md dist/
-          cp -R THIRD_PARTY_LICENSES dist/
-          tar -C dist -czf "$artifact" "$BINARY_NAME" README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES
-          sha256sum "$artifact" > "$artifact.sha256"
-          mkdir -p upload
-          mv "$artifact" "$artifact.sha256" upload/
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.BINARY_NAME }}-linux-${{ matrix.arch }}
-          path: upload/*
-          if-no-files-found: error
-
-  build-windows:
-    name: Build Windows ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            goarch: amd64
-            runner: windows-2022
-            msystem: UCRT64
-            msys-package-prefix: mingw-w64-ucrt-x86_64
-            cc: /ucrt64/bin/gcc
-            pkg_config: /ucrt64/bin/pkg-config
-            opus_configure_flags: ""
-            ffmpeg_configure_flags: --arch=x86_64 --target-os=mingw32
-          - arch: arm64
-            goarch: arm64
-            runner: windows-11-arm
-            msystem: CLANGARM64
-            msys-package-prefix: mingw-w64-clang-aarch64
-            cc: /clangarm64/bin/clang
-            pkg_config: /clangarm64/bin/pkg-config
-            opus_configure_flags: --disable-rtcd --disable-asm
-            ffmpeg_configure_flags: --arch=aarch64 --target-os=mingw32
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Setup MSYS2
+          brew install autoconf automake libtool pkgconf coreutils gnu-tar make xz ffmpeg
+          echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+      - name: Windows build tools
+        if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
           msystem: ${{ matrix.msystem }}
           path-type: inherit
           update: true
           install: >-
-            base-devel
-            autoconf
-            automake
-            libtool
-            make
-            curl
-            tar
-            xz
-            zip
-            ${{ matrix.msys-package-prefix }}-pkgconf
-            ${{ matrix.msys-package-prefix }}-toolchain
-
-      - name: Build static audio dependencies
-        run: ./scripts/bootstrap-static-audio-deps.sh
+            base-devel autoconf automake libtool make curl tar xz zip
+            ${{ matrix.prefix }}-pkgconf ${{ matrix.prefix }}-toolchain ${{ matrix.prefix }}-ffmpeg
+      - name: Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt --component clippy
+          rustup target add --toolchain "$RUST_VERSION" "${{ matrix.target }}"
+      - name: Unix checks and build
+        if: runner.os != 'Windows'
+        shell: bash
         env:
-          CC: ${{ matrix.cc }}
-          PKG_CONFIG_BIN: ${{ matrix.pkg_config }}
-          OPUS_CONFIGURE_FLAGS: ${{ matrix.opus_configure_flags }}
-          FFMPEG_CONFIGURE_FLAGS: ${{ matrix.ffmpeg_configure_flags }}
-          JOBS: 2
-
-      - name: Verify FFmpeg filters
-        run: grep -q '#define CONFIG_ASPLIT_FILTER 1' third_party/src/ffmpeg-*/config_components.h
-
-      - name: Normalize Windows ARM64 pkg-config flags
-        if: matrix.arch == 'arm64'
-        run: sed -i 's/ -latomic//g' third_party/ffmpeg-audio/lib/pkgconfig/*.pc
-
-      - name: Build binary
+          JOBS: "2"
         run: |
-          mkdir -p dist
-          CGO_ENABLED=1 \
-          GOOS=windows \
-          GOARCH="${{ matrix.goarch }}" \
-          CC="${{ matrix.cc }}" \
-          PKG_CONFIG_PATH="$PWD/third_party/ffmpeg-audio/lib/pkgconfig" \
-          PKG_CONFIG="${{ matrix.pkg_config }} --static" \
-          go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-static'" -o "dist/${BINARY_NAME}.exe" ./cmd/server
-
-      - name: Package binary
+          ./scripts/bootstrap-static-audio-deps.sh
+          export PKG_CONFIG_PATH="$PWD/third_party/ffmpeg-audio/lib/pkgconfig"
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          cargo build --locked --release
+          ./target/release/qwen-stt-compatible --help
+          sh scripts/package.sh "${{ matrix.platform }}" "${{ matrix.arch }}" target/release/qwen-stt-compatible
+      - name: Windows checks and build
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        env:
+          CC: ${{ matrix.compiler }}
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc
+          CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER: clang
+          RUSTFLAGS: -C target-feature=+crt-static -C link-arg=-static
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          FFMPEG_CONFIGURE_FLAGS: --arch=${{ matrix.ffmpeg_arch }} --target-os=mingw32
+          DEPENDENCY_CONFIGURE_FLAGS: --host=${{ matrix.host }} --build=${{ matrix.host }}
+          OPUS_CONFIGURE_FLAGS: ${{ matrix.opus_flags }}
+          JOBS: "2"
         run: |
-          artifact="${BINARY_NAME}-windows-${{ matrix.arch }}.zip"
-          cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md dist/
-          cp -R THIRD_PARTY_LICENSES dist/
-          (cd dist && zip -9 "../$artifact" "$BINARY_NAME.exe" README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES/*)
-          sha256sum "$artifact" > "$artifact.sha256"
-          mkdir -p upload
-          mv "$artifact" "$artifact.sha256" upload/
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+          ./scripts/bootstrap-static-audio-deps.sh
+          export PKG_CONFIG_PATH="$PWD/third_party/ffmpeg-audio/lib/pkgconfig"
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          cargo build --locked --release
+          ./target/${{ matrix.target }}/release/qwen-stt-compatible.exe --help
+          sh scripts/package.sh windows "${{ matrix.arch }}" "target/${{ matrix.target }}/release/qwen-stt-compatible.exe"
+      - uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.BINARY_NAME }}-windows-${{ matrix.arch }}
-          path: upload/*
+          name: qwen-stt-compatible-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/upload/*
           if-no-files-found: error
-
-  build-macos:
-    name: Build macOS ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            goarch: amd64
-            runner: macos-15-intel
-          - arch: arm64
-            goarch: arm64
-            runner: macos-15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Install build tools
-        run: brew install autoconf automake libtool pkg-config gnupg coreutils
-
-      - name: Build static audio dependencies
-        run: ./scripts/bootstrap-static-audio-deps.sh
-        env:
-          CC: clang
-          JOBS: 2
-
-      - name: Verify FFmpeg filters
-        run: grep -q '#define CONFIG_ASPLIT_FILTER 1' third_party/src/ffmpeg-*/config_components.h
-
-      # Link audio libraries statically, but retain macOS system libraries.
-      - name: Build binary
-        run: |
-          mkdir -p dist
-          CGO_ENABLED=1 \
-          GOOS=darwin \
-          GOARCH="${{ matrix.goarch }}" \
-          CC=clang \
-          PKG_CONFIG_PATH="$PWD/third_party/ffmpeg-audio/lib/pkgconfig" \
-          PKG_CONFIG="pkg-config --static" \
-          go build -tags libav -trimpath -ldflags="-s -w -linkmode external" -o "dist/${BINARY_NAME}" ./cmd/server
-
-      - name: Test with libav
-        run: go test -tags libav ./...
-        env:
-          CGO_ENABLED: "1"
-          CC: clang
-          PKG_CONFIG_PATH: ${{ github.workspace }}/third_party/ffmpeg-audio/lib/pkgconfig
-          PKG_CONFIG: pkg-config --static
-
-      - name: Package binary
-        run: |
-          artifact="${BINARY_NAME}-darwin-${{ matrix.arch }}.tar.gz"
-          cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md dist/
-          cp -R THIRD_PARTY_LICENSES dist/
-          tar -C dist -czf "$artifact" "$BINARY_NAME" README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES
-          shasum -a 256 "$artifact" > "$artifact.sha256"
-          mkdir -p upload
-          mv "$artifact" "$artifact.sha256" upload/
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.BINARY_NAME }}-darwin-${{ matrix.arch }}
-          path: upload/*
-          if-no-files-found: error
-
   release-latest:
     name: Latest release
+    needs: build
     runs-on: ubuntu-24.04
-    needs:
-      - build-linux
-      - build-windows
-      - build-macos
     if: github.event_name != 'pull_request' && (github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
-
-      - name: Create checksum manifest
-        working-directory: release-assets
-        run: sha256sum *.tar.gz *.zip > SHA256SUMS
-
-      - name: Move Latest tag
+      - name: Checksums and Latest tag
         run: |
+          (cd release-assets && sha256sum *.tar.gz *.zip > SHA256SUMS)
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -f Latest "$GITHUB_SHA"
           git push --force origin refs/tags/Latest
-
-      - name: Publish rolling Latest release
-        uses: ncipollo/release-action@v1
+      - uses: ncipollo/release-action@v1
         with:
           tag: Latest
           name: Latest
           commit: ${{ github.sha }}
-          body: Rolling release generated from `${{ github.sha }}`.
+          body: Rolling Rust release generated from `${{ github.sha }}`.
           artifacts: release-assets/*
           allowUpdates: true
           removeArtifacts: true

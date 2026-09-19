@@ -1,44 +1,48 @@
 # Third-Party Notices
 
-The server statically links the following components. Release packages include
-their complete license texts in `THIRD_PARTY_LICENSES/`.
+Qwen STT Compatible is GPL-3.0-or-later. Copyright (C) 2026 Joey Kot.
 
 ## ASR-Audio-Preprocess
 
-- Version: v0.0.0-20260901092746-72922741cf43
+- Rust crate: smartaudio 0.1.0
 - Source: https://github.com/Joey-Kot/ASR-Audio-Preprocess
-- License: GPL-3.0-or-later
-- Full license text: `LICENSE`
+- Pinned revision: 8e132bf8eddd361c2a03c074d9da85e0e5298dd2
+- License: GPL-3.0-or-later; complete text in LICENSE.
 
-## FFmpeg
+## Statically linked audio libraries
 
-- Version: 8.1.2
-- Source: https://ffmpeg.org/
-- License: LGPL-2.1-or-later for the distributed build. The delegated build
-  scripts do not enable `--enable-gpl`, `--enable-version3`, or
-  `--enable-nonfree`.
-- Full license text: `THIRD_PARTY_LICENSES/FFmpeg-LGPL-2.1-or-later.txt`
-- Build configuration: `scripts/bootstrap-static-audio-deps.sh`
+| Component | Version | License text |
+|---|---|---|
+| FFmpeg | 8.1.2 | THIRD_PARTY_LICENSES/FFmpeg-GPL-3.0-or-later.txt |
+| Opus | 1.5.2 | THIRD_PARTY_LICENSES/Opus-BSD-3-Clause.txt |
+| LAME | 3.100 | THIRD_PARTY_LICENSES/LAME-LGPL-2.0-only.txt |
+| libogg | 1.3.5 | THIRD_PARTY_LICENSES/Xiph-BSD-3-Clause.txt |
+| libvorbis | 1.3.7 | THIRD_PARTY_LICENSES/Xiph-BSD-3-Clause.txt |
+| OpenCore AMR | 0.1.6 | THIRD_PARTY_LICENSES/opencore-amr-Apache-2.0.txt |
+| Speex | 1.2.1 | THIRD_PARTY_LICENSES/Speex-BSD-3-Clause.txt |
+| vo-amrwbenc | 0.1.3 | THIRD_PARTY_LICENSES/vo-amrwbenc-Apache-2.0.txt |
 
-## Opus
+Native build scripts are synchronized with the pinned audio library.
+The FFmpeg configuration enables GPL and version 3, disables nonfree, and
+does not link libavfilter. Source URLs and checksums are recorded in
+scripts/bootstrap-static-audio-deps.sh and scripts/audio-sources.sha256.
+OpenCore AMR and vo-amrwbenc NOTICE files accompany their license texts.
 
-- Version: 1.5.2
-- Source: https://opus-codec.org/
-- License: BSD-3-Clause
-- Full license text: `THIRD_PARTY_LICENSES/Opus-BSD-3-Clause.txt`
-- Build configuration: `scripts/bootstrap-static-audio-deps.sh`
+Earshot 1.2.2 is MIT OR Apache-2.0. The complete texts are
+THIRD_PARTY_LICENSES/Earshot-MIT.txt and Earshot-Apache-2.0.txt.
+Source: https://github.com/pykeio/earshot.
 
-## Gorilla WebSocket
+## Rust dependencies
 
-- Version: v1.5.3
-- Source: https://github.com/gorilla/websocket
-- License: BSD-2-Clause
-- Full license text: `THIRD_PARTY_LICENSES/Gorilla-WebSocket-BSD-2-Clause.txt`
+Cargo.lock records exact Rust dependency versions, including Tokio, Axum,
+Reqwest, Rustls, Tungstenite, Serde and Clap. Release packages include
+vendored-dependency license files in THIRD_PARTY_LICENSES/rust/.
 
-The Docker runtime also installs the distribution's FFmpeg executable for
-streaming file decoding. Its package licenses and build configuration are
-provided by Debian; it is separate from the statically linked FFmpeg above.
+The Docker runtime separately installs Debian's FFmpeg executable for realtime
+file decoding. Debian provides that package's license and build configuration.
 
-## Project License
+## Test fixture
 
-- GPL-3.0-or-later
+tests/fixtures/jfk.flac is the public-domain speech excerpt distributed with
+the MIT-licensed Whisper test suite. Its source revision, checksum and license
+are retained in tests/fixtures/README.md and Whisper-LICENSE.

@@ -2,7 +2,7 @@
 
 # Qwen STT Compatible
 
-Qwen STT Compatible is an OpenAI-style speech transcription service written in Go. Non-realtime models call DashScope ASR over HTTP, with audio preprocessing handled by the Go dependency [Joey-Kot/ASR-Audio-Preprocess](https://github.com/Joey-Kot/ASR-Audio-Preprocess). Realtime models continuously send audio and receive recognition results over WebSocket, supporting file-based SSE and OpenAI Realtime transcription sessions.
+Qwen STT Compatible is an OpenAI-style speech transcription service written in Rust. Non-realtime models call DashScope ASR over HTTP, with audio preprocessing handled by the Rust library [Joey-Kot/ASR-Audio-Preprocess](https://github.com/Joey-Kot/ASR-Audio-Preprocess). Realtime models continuously send audio and receive recognition results over WebSocket, supporting file-based SSE and OpenAI Realtime transcription sessions.
 
 ## Downloads
 
@@ -14,54 +14,6 @@ Qwen STT Compatible is an OpenAI-style speech transcription service written in G
 | Windows arm64 | [windows-arm64](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-windows-arm64.zip) | [sha256](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-windows-arm64.zip.sha256) |
 | macOS x86_64 | [macos-x86_64](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-darwin-amd64.tar.gz) | [sha256](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-darwin-amd64.tar.gz.sha256) |
 | macOS arm64 | [macos-arm64](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-darwin-arm64.tar.gz) | [sha256](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-darwin-arm64.tar.gz.sha256) |
-
-## Silence Trimming Benchmarks
-
-Tests ran in a virtualized AMD Ryzen 9 5950X environment with all 32 vCPUs allocated, using WebDAV and a RAM disk. CPU spikes stayed below 30%, with typical usage between 6% and 15%. The measured difference between the RAM disk and SSD was negligible; local temporary-file I/O was not the bottleneck. Tests ran on a local network, where file transfers were slightly faster than over the public internet.
-
-All three samples cover the `00:10:00`–`00:30:00` portion of movie audio, with an original duration of 20 minutes each. They include alternating and overlapping dialogue, varying speaker distances and volumes, ambient sound, and music. The model was `qwen3-asr-flash`: the English sample was from *Iron Man* (6 channels, 48.0 kHz, 37.3 MiB, Opus), the Japanese sample from *Your Name* (6 channels, 48.0 kHz, 39.8 MiB, Opus), and the Chinese sample from *Let the Bullets Fly* (2 channels, 48.0 kHz, 11.8 MiB, Opus).
-
-Test configuration:
-
-```bash
-MAX_UPLOAD_MB="500"
-UPSTREAM_TIMEOUT_SECONDS="10"
-API_CONCURRENCY="15"
-API_SEGMENT_LENGTH="175"
-
-FFMPEG_SEGMENT_LENGTH="5"
-FFMPEG_WORKS="16"
-SKIP_TRIM="false"
-SEGMENT_WORKERS="0"
-LIBAV_CODEC_THREADS="0"
-SILENT_INTERVAL="700"
-PADDING_LENGTH="100"
-OUTPUT_BITRATE="" # Not explicitly set; uses the default 128k
-
-ENABLE_LID="true"
-ENABLE_ITN="false"
-
-ASR_RETRY_MAX_ATTEMPTS="3"
-ASR_RETRY_INITIAL_DELAY="0.5"
-ASR_RETRY_FACTOR="2.0"
-ASR_RETRY_MAX_DELAY="8.0"
-```
-
-All benchmarks used `SKIP_TRIM=false`. End-to-end time is the total time reported by `curl`. Preprocessing time is measured from receipt of the request to the `segments merged_duration` log entry, rounded to whole seconds. The trimming ratio is the removed duration divided by the original duration. End-to-end speed is the original audio duration divided by end-to-end time; post-trim speed uses the trimmed audio duration instead.
-
-| Metric | Iron Man (English) | Your Name (Japanese) | Let the Bullets Fly (Chinese) |
-|---|---:|---:|---:|
-| Original duration | 20m 0.007s | 20m 0.006s | 20m 0.007s |
-| Duration after trimming | 17m 8.862s | 15m 35.705s | 15m 34.507s |
-| Trimming ratio | 14.26% | 22.03% | 22.12% |
-| Preprocessing time | Approx. 10s | Approx. 9s | Approx. 6s |
-| End-to-end time | 19s | 16s | 11s |
-| End-to-end speed | 63.2× | 75.0× | 109.1× |
-| Post-trim speed | 54.2× | 58.5× | 85.0× |
-| Accuracy | 95%–96% | 96%–97% | 97%–98% |
-| Transcripts | [View](testdata/performance/transcripts/ironman1.txt) | [View](<testdata/performance/transcripts/yourname..txt>) | [View](<testdata/performance/transcripts/Let the Bullets Fly.txt>) |
-
-Accuracy was assessed against official subtitles in the original language, using an LLM to compare transcripts and manual spot checks to assist verification. Because official subtitles are not strictly verbatim, subtitle content was supplemented or corrected against the actual dialogue. Punctuation, sentence boundaries, and subtitle segmentation were ignored. This metric measures the correctness of the main meaning and recognized text; it is not standard CER/WER.
 
 ## Features
 
@@ -79,7 +31,7 @@ Accuracy was assessed against official subtitles in the original language, using
 
 ### Audio Processing and Uploads
 
-- Non-realtime audio is transcoded, trimmed for silence in parallel fixed-length slices, merged, and then split at silence intervals for concurrent ASR segment export and encoding; `SKIP_TRIM=true` or a request with `stream=true` skips trimming and merging
+- The Rust audio library detects speech and exports bounded Ogg/Opus segments. `SKIP_TRIM=true` or non-realtime `stream=true` retains internal pauses. The service recognizes the returned files concurrently and merges results in their original order.
 - Non-realtime segments use Ogg + Opus and are converted to the model's supported sample rate; Base64 and URL uploads enforce their respective size limits, as described in [Audio Segment Storage and Uploads](#audio-segment-storage-and-uploads)
 - Realtime audio uses continuous PCM transmission without silence trimming, separate recognition tasks, or public audio URLs
 
@@ -99,9 +51,8 @@ Accuracy was assessed against official subtitles in the original language, using
 - `model`: model name, passed unchanged to DashScope; see Supported Models below
 - `language`: optional 2–3-letter language code, such as `zh`, `en`, or `yue`; realtime models also validate language support for the specific model
 - `prompt`: optional; non-realtime Qwen3-ASR-Flash uses system context, synchronous Qwen-Audio-3.0-ASR-Flash / Fun-ASR-Flash use an `input_text` message, and Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR use `input.context`. Realtime models validate context support as described below; Qwen3-ASR-Flash-Realtime and Paraformer-Realtime reject nonempty `prompt` values
-- `enable_lid`: compatibility field; currently supported models do not forward it upstream
-- `enable_itn`: optional; non-realtime models default to the service's `ENABLE_ITN` / `--enable-itn` setting; realtime models ignore this field
-- `stream`: optional, defaults to `false`; `true` returns SSE and also forces non-realtime models to skip fixed-slice silence trimming and merging
+- `enable_itn`: optional; applies only to non-realtime `qwen3-asr-flash*` and `qwen3-asr-flash-filetrans*`. Defaults to `ENABLE_ITN` / `--enable-itn`; explicit `true` or `false` overrides the default. Other models ignore this field.
+- `stream`: optional, defaults to `false`; `true` returns SSE and also forces non-realtime models to skip non-speech trimming
 - `response_format`: realtime models only support omission or `json`
 
 Example:
@@ -121,7 +72,6 @@ Non-streaming response:
 {"status":"success","text":"..."}
 ```
 
-For non-realtime models, `stream=true` forces this request to behave as if `SKIP_TRIM=true`, skipping fixed-slice silence trimming and merging even when the service setting is `false`. After conversion to WAV, audio is still segmented according to `API_SEGMENT_LENGTH`, with `SEGMENT_WORKERS` controlling export and encoding concurrency and `API_CONCURRENCY` controlling upstream recognition concurrency. `FFMPEG_SEGMENT_LENGTH` and `FFMPEG_WORKS` are not used for trimming. This override does not change global configuration or affect other requests.
 
 Pseudo-streaming responses are still emitted only after all segments have been recognized:
 
@@ -294,6 +244,7 @@ The service does not translate model aliases. It passes `model` unchanged to Das
 | `paraformer-realtime-v2*` | `paraformer-realtime-v2` | Realtime WebSocket recognition, binary PCM, 24000 Hz upstream |
 | `paraformer-realtime-v1*` | `paraformer-realtime-v1` | Realtime WebSocket recognition, fixed 16000 Hz upstream |
 | `paraformer-realtime-8k-v2*` / `paraformer-realtime-8k-v1*` | `paraformer-realtime-8k-v2`, `paraformer-realtime-8k-v1` | Realtime WebSocket recognition, fixed 8000 Hz upstream |
+| `qwen3-asr-flash-filetrans*` | `qwen3-asr-flash-filetrans` | `POST /services/audio/asr/transcription`, asynchronous task using a public URL; requires WebDAV in this service |
 | `qwen-audio-3.0-asr-flash-filetrans*` | `qwen-audio-3.0-asr-flash-filetrans` | `POST /services/audio/asr/transcription`, asynchronous URL-based task, polling `/tasks/<task_id>` |
 | `qwen-audio-3.0-asr-flash*` | `qwen-audio-3.0-asr-flash` | `POST /services/aigc/multimodal-generation/generation`, `input_audio` request structure |
 | `qwen3-asr-flash*` | `qwen3-asr-flash`, `qwen3-asr-flash-2025-09-08` | `POST /services/aigc/multimodal-generation/generation`, Qwen3 ASR multimodal request structure |
@@ -336,15 +287,11 @@ REALTIME_IDLE_TIMEOUT_SECONDS="120"
 
 API_CONCURRENCY="10"
 API_SEGMENT_LENGTH="175"
-FFMPEG_WORKS="16"
-FFMPEG_SEGMENT_LENGTH="5"
 SKIP_TRIM="false"
-SEGMENT_WORKERS="0"
-LIBAV_CODEC_THREADS="0"
-SILENT_INTERVAL="700"
+LIBAV_CODEC_THREADS="1"
 PADDING_LENGTH="100"
+VAD_START_THRESHOLD="0.6"
 OUTPUT_BITRATE="128k"
-ENABLE_LID="true"
 ENABLE_ITN="false"
 
 ASR_RETRY_MAX_ATTEMPTS="4"
@@ -365,12 +312,12 @@ The HTTP endpoint and the two WebSocket endpoints are configured independently; 
 
 - Paraformer realtime is available only in Beijing and reuses `DASHSCOPE_WS_URL`. The default `wss://dashscope.aliyuncs.com/api-ws/v1/inference` remains usable.
 - The key, workspace, and region must match. `DASHSCOPE_WORKSPACE` supplies the `X-DashScope-WorkSpace` header for realtime upstream requests.
-- Non-realtime requests to DashScope, OSS, and WebDAV prefer HTTP/2 but do not reuse keep-alive connections: each request opens a new TCP/TLS connection and closes it on completion. Realtime connections remain open for the duration of an upstream task.
+- Non-realtime requests to DashScope, OSS, and WebDAV prefer HTTP/2 and reuse connections through the HTTP client's connection pool. Realtime connections remain open for the duration of an upstream task.
 
 ### Uploads and Storage
 
 - `MAX_UPLOAD_MB` limits the size of each uploaded audio file. It defaults to `500` MiB and can be overridden with `--max-upload-mb`.
-- WebDAV is enabled only when both `WEBDAV_URL` and `WEBDAV_CREDENTIALS` are set. Otherwise, URL-input models use the DashScope SDK's built-in temporary OSS flow.
+- WebDAV is enabled only when both `WEBDAV_URL` and `WEBDAV_CREDENTIALS` are set. Otherwise, URL-input models use the built-in DashScope temporary OSS flow.
 - `WEBDAV_CREDENTIALS` uses the format `user@password`; the password may contain additional `@` characters.
 - WebDAV settings do not affect Qwen3-ASR-Flash, Qwen-Audio-3.0-ASR-Flash (excluding Filetrans), or Fun-ASR-Flash, which use Base64 Data URIs directly.
 
@@ -378,23 +325,23 @@ See [Audio Segment Storage and Uploads](#audio-segment-storage-and-uploads) for 
 
 ### Non-Realtime Audio Processing
 
+Preprocessing calls the Rust library with a file and configuration and consumes ordered output files and processing information. Default `process` trims non-speech; `SKIP_TRIM=true` or non-realtime `stream=true` selects `split` to retain internal pauses. Both modes use the library's speech detector. No speech returns success with empty text. Segment limits include duration and upstream file-size budgets; `API_CONCURRENCY` controls recognition concurrency. `PADDING_LENGTH` accepts 0–1000 milliseconds.
+
+`VAD_START_THRESHOLD` / `--vad-start-threshold` defaults to `0.6` and accepts finite values from `0.5` to `1.0` inclusive. It controls speech onset detection in both `process` and `split` modes and does not affect upstream VAD for realtime models.
+
 ASR segments use the `ogg` container and `libopus` codec. The service does not validate model format allowlists against the original file extension. `paraformer-8k*` uses 8000 Hz; other non-realtime models use 16000 Hz.
 
 | Setting | Purpose and default behavior |
 |---|---|
 | `OUTPUT_BITRATE` / `--output-bitrate` | Opus bitrate; defaults to `128k` |
-| `SEGMENT_WORKERS` / `--segment-workers` | ASR segment export and encoding concurrency; `0` lets the preprocessing library choose based on CPU count |
-| `LIBAV_CODEC_THREADS` / `--libav-codec-threads` | Decoder/encoder threads per libav pipeline; `0` uses libav defaults |
-| `SKIP_TRIM` / `--skip-trim` | Defaults to `false`; `true` or `1` skips fixed-slice silence trimming and merging, splitting at silence intervals directly after conversion to WAV |
-
-When increasing concurrency or thread counts, also account for `FFMPEG_WORKS` to avoid excessive combined Go worker and libav codec parallelism.
+| `LIBAV_CODEC_THREADS` / `--libav-codec-threads` | Native encoder threads, default `1`; `0` allows automatic selection |
+| `SKIP_TRIM` / `--skip-trim` | Default `false` uses library `process`; `true` uses `split`, retaining internal pauses |
 
 Non-realtime requests with `stream=true` always skip trimming and merging. With `stream=false` or an omitted value, `SKIP_TRIM` applies. Realtime processing is unaffected by this setting.
 
 ### Recognition Options and Authentication
 
-- `ENABLE_LID` / `enable_lid` is retained only for compatibility; currently supported models do not forward it upstream.
-- `ENABLE_ITN` provides the default for non-realtime requests that omit `enable_itn`. An explicit request field overrides the service default.
+- `ENABLE_ITN` defaults to `false` and applies only to non-realtime Qwen3-ASR-Flash and Qwen3-ASR-Flash-Filetrans. Synchronous requests send `parameters.asr_options.enable_itn`; asynchronous requests send `parameters.enable_itn`. The request field overrides the service default.
 - In production, pass `API_TOKEN` and `DASHSCOPE_API_KEY` through environment variables to keep keys out of command lines. For local testing, `--api-token` and `--dashscope-api-key` are also supported.
 
 ### Configuration Scope
@@ -403,33 +350,35 @@ Non-realtime requests with `stream=true` always skip trimming and merging. With 
 |---|---|
 | Common | `LISTEN`, `API_TOKEN`, `DASHSCOPE_API_KEY`; `MAX_UPLOAD_MB` applies to file uploads |
 | Non-realtime | `DASHSCOPE_HTTP_BASE_URL`, `WEBDAV_URL`, `WEBDAV_CREDENTIALS`, `UPSTREAM_TIMEOUT_SECONDS`, `API_CONCURRENCY` |
-| Non-realtime audio processing | `API_SEGMENT_LENGTH`, `FFMPEG_SEGMENT_LENGTH`, `FFMPEG_WORKS`, `SKIP_TRIM`, `SEGMENT_WORKERS`, `LIBAV_CODEC_THREADS`, `SILENT_INTERVAL`, `PADDING_LENGTH`, `OUTPUT_BITRATE` |
-| Non-realtime recognition options | `ENABLE_LID`, `ENABLE_ITN`, all `ASR_RETRY_*`; realtime mode does not read these options |
+| Non-realtime audio processing | `API_SEGMENT_LENGTH`, `SKIP_TRIM`, `LIBAV_CODEC_THREADS`, `PADDING_LENGTH`, `VAD_START_THRESHOLD`, `OUTPUT_BITRATE` |
+| Non-realtime recognition options | `ENABLE_ITN`, all `ASR_RETRY_*`; realtime mode does not read these options |
 | Realtime | `DASHSCOPE_WS_URL` (Fun-ASR / Paraformer protocols), `DASHSCOPE_QWEN_WS_URL` (Qwen-ASR protocol), `DASHSCOPE_WORKSPACE`, all `REALTIME_*` |
 
 `REALTIME_CONCURRENCY` jointly limits realtime file requests and client WebSocket sessions. Excess requests receive HTTP 429 rather than being queued. A WebSocket session can have at most 4 unfinished upstream tasks. Realtime timeouts cover the handshake, startup wait, finish wait, and individual writes, not the total recording duration. `REALTIME_IDLE_TIMEOUT_SECONDS` limits how long a client WebSocket can remain idle without sending a message.
 
-Range validation for non-realtime retry and preprocessing concurrency settings occurs when non-realtime requests run, so it does not prevent a realtime-only service from starting. Invalid command-line types or syntax still fail at startup.
+Non-realtime retry, segment-duration and padding range checks run only for non-realtime requests. Invalid command-line types or syntax still fail at startup.
 
 ## Building Locally
 
-The realtime file endpoint requires `ffmpeg` on the system `PATH`. The continuous-PCM WebSocket endpoint does not require the FFmpeg executable; 8k and 16k resampling is implemented in Go.
+The realtime file endpoint requires `ffmpeg` on the system `PATH`. The continuous-PCM WebSocket endpoint does not require the FFmpeg executable; 8k and 16k resampling is implemented in Rust.
 
-The preprocessing library requires the `libav` build tag and static FFmpeg/libav dependencies. The project script delegates to the build script provided by the `github.com/Joey-Kot/ASR-Audio-Preprocess` version in `go.mod`:
+Rust 1.98.1, a C/C++ compiler, make, autotools, pkg-config, curl and tar/xz are required. `Cargo.toml` pins the audio library to a Git commit, and the native build scripts match that version. Native dependencies are installed inside the project. Audio libraries are statically linked; Linux system libraries remain dynamically linked.
 
 ```bash
 ./scripts/bootstrap-static-audio-deps.sh
 
-CGO_ENABLED=1 \
-PKG_CONFIG_PATH="$PWD/third_party/ffmpeg-audio/lib/pkgconfig" \
-PKG_CONFIG="pkg-config --static" \
-go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-static'" -o qwen-stt-compatible ./cmd/server
+export PKG_CONFIG_PATH="$PWD/third_party/ffmpeg-audio/lib/pkgconfig"
+cargo build --locked --release
+cargo fmt --all --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 ```
+
 
 Complete startup example:
 
 ```bash
-./qwen-stt-compatible \
+./target/release/qwen-stt-compatible \
   --api-token "sk-aaa,sk-bbb" \
   --dashscope-api-key "sk-xxx" \
   --listen ":8080" \
@@ -440,15 +389,11 @@ Complete startup example:
   --upstream-timeout 30s \
   --api-concurrency 10 \
   --api-segment-length 175s \
-  --fixed-slice-length 5s \
-  --fixed-slice-workers 16 \
   --skip-trim 0 \
-  --segment-workers 0 \
-  --libav-codec-threads 0 \
-  --silent-interval 700ms \
+  --libav-codec-threads 1 \
   --padding 100ms \
+  --vad-start-threshold 0.6 \
   --output-bitrate "128k" \
-  --enable-lid 1 \
   --enable-itn 0 \
   --asr-retry-max-attempts 3 \
   --asr-retry-initial-delay 500ms \
@@ -465,23 +410,18 @@ WEBDAV_URL="https://files.example.com/dav/asr" \
 WEBDAV_CREDENTIALS="user@password" \
 OUTPUT_BITRATE="128k" \
 SKIP_TRIM="false" \
-ENABLE_LID="true" \
 ENABLE_ITN="false" \
-./qwen-stt-compatible \
+./target/release/qwen-stt-compatible \
   --listen ":8080" \
   --dashscope-base-url "https://dashscope.aliyuncs.com/api/v1" \
   --max-upload-mb 500 \
   --upstream-timeout 30s \
   --api-concurrency 10 \
   --api-segment-length 175s \
-  --fixed-slice-length 5s \
-  --fixed-slice-workers 16 \
-  --segment-workers 0 \
-  --libav-codec-threads 0 \
-  --silent-interval 700ms \
+  --libav-codec-threads 1 \
   --padding 100ms \
+  --vad-start-threshold 0.6 \
   --output-bitrate "128k" \
-  --enable-lid 1 \
   --enable-itn 0 \
   --asr-retry-max-attempts 3 \
   --asr-retry-initial-delay 500ms \
@@ -512,15 +452,11 @@ Command-line options:
 | `--upstream-timeout` | `30s` | `UPSTREAM_TIMEOUT_SECONDS` | Non-realtime DashScope HTTP request timeout |
 | `--api-concurrency` | `10` | `API_CONCURRENCY` | Concurrent non-realtime upstream ASR requests; excess requests are queued |
 | `--api-segment-length` | `175s` | `API_SEGMENT_LENGTH` | Maximum ASR segment duration |
-| `--fixed-slice-length` | `5s` | `FFMPEG_SEGMENT_LENGTH` | Fixed slice length for silence trimming |
-| `--fixed-slice-workers` | `16` | `FFMPEG_WORKS` | Fixed-slice silence trimming concurrency |
-| `--skip-trim` | `false` | `SKIP_TRIM` | Skip fixed-slice silence trimming and merging, splitting at silence intervals directly after transcoding; accepts `0/1` or `true/false`; forced on for non-realtime `stream=true` requests |
-| `--segment-workers` | `0` | `SEGMENT_WORKERS` | ASR segment export and encoding concurrency; `0` selects based on CPU count |
-| `--libav-codec-threads` | `0` | `LIBAV_CODEC_THREADS` | Decoder/encoder threads per libav pipeline; `0` uses libav defaults |
-| `--silent-interval` | `700ms` | `SILENT_INTERVAL` | Minimum silence duration |
+| `--skip-trim` | `false` | `SKIP_TRIM` | Use `split` to retain internal pauses; accepts `0/1` or `true/false`; forced on for non-realtime `stream=true` |
+| `--libav-codec-threads` | `1` | `LIBAV_CODEC_THREADS` | Native encoder threads; `0` allows automatic selection |
 | `--padding` | `100ms` | `PADDING_LENGTH` | Padding retained before and after non-silent intervals |
+| `--vad-start-threshold` | `0.6` | `VAD_START_THRESHOLD` | VAD speech onset threshold for non-realtime preprocessing; `0.5`–`1.0` inclusive, higher is stricter |
 | `--output-bitrate` | `128k` | `OUTPUT_BITRATE` | Output bitrate for ASR audio segments |
-| `--enable-lid` | `true` | `ENABLE_LID` | Compatibility setting; currently supported models do not forward it upstream |
 | `--enable-itn` | `false` | `ENABLE_ITN` | Default when the request omits `enable_itn`; accepts `0/1` or `true/false` |
 | `--asr-retry-max-attempts` | `4` | `ASR_RETRY_MAX_ATTEMPTS` | Maximum ASR call attempts |
 | `--asr-retry-initial-delay` | `500ms` | `ASR_RETRY_INITIAL_DELAY` | Initial delay before an ASR retry |
@@ -533,39 +469,9 @@ Release packages include the executable, `README.md`, `LICENSE`, `NOTICE`,
 
 ## Logs and Temporary Files
 
-On startup, the service removes historical request directories under the system temporary directory:
+Requests use `qwen-stt-*` directories under the system temporary directory, released on completion or cancellation. Native processing keeps its request directory alive until it stops; cancellation is forwarded to the preprocessing library. Directories left by a forcibly terminated process are handled by the system temporary-file cleanup policy.
 
-```text
-<system-temp-dir>/qwen-stt-compatible/<request_id>
-```
-
-Each request's temporary directory is also removed when the request ends normally.
-
-Each transcription request logs basic request information, without API tokens, DashScope API keys, or audio content:
-
-```text
-request=<request_id> endpoint=/v1/audio/transcriptions file=<filename> model=<model> language=<language> enable_lid=<bool> enable_itn=<bool>
-```
-
-Realtime file requests instead log `mode=realtime` and the upstream `sample_rate`, without segment or trimming logs. WebSocket sessions log connection and close events with `session=<session_id>`. Realtime PCM is passed through pipes or memory, without creating Ogg segments or uploading to OSS / WebDAV.
-
-For non-realtime, non-streaming requests with `SKIP_TRIM=false`, successful fixed-slice silence trimming logs:
-
-```text
-fixed trim input_duration=<original-audio-duration> fixed_slice_length=<fixed-slice-length> slices=<successful-slice-count> trimmed_slices=<slices-with-silence-detected-and-trimmed>
-```
-
-After ASR segments are generated in the default mode:
-
-```text
-segments merged_duration=<merged-audio-duration> asr_segments=<concurrent-asr-segment-count>
-```
-
-For non-realtime requests with `SKIP_TRIM=true` or `stream=true`, fixed-trimming logs are omitted. Direct segmentation logs:
-
-```text
-segments skip_trim=true input_duration=<transcoded-audio-duration> asr_segments=<concurrent-asr-segment-count>
-```
+Logs include preprocessing status, segment count, input/output durations, and upstream HTTP methods, sanitized URLs without credentials/query strings, status codes and protocols. WebSocket closures include the session ID. Authentication headers and audio content are not logged. `RUST_LOG` controls verbosity.
 
 ## Audio Segment Storage and Uploads
 
@@ -758,7 +664,7 @@ The file endpoint uses the VAD configuration above. The WebSocket endpoint uses 
 
 In manual mode, send `input_audio_buffer.commit` followed by `session.finish` when input ends. In VAD mode, send only `session.finish`. Continue receiving results and close the upstream connection only after `session.finished`. Items are correlated and deduplicated by `item_id`; confirmed `text` prefixes become deltas, and `completed.transcript` supplies the remaining final text. `stash` is not converted into downstream deltas. If upstream revises an already-confirmed prefix, the service returns a protocol error to avoid emitting incorrect text that cannot be retracted.
 
-Upstream supports PCM or Opus at 16000 / 8000 Hz; this adapter consistently uses 16000 Hz PCM16. Client input is not converted to Ogg / Opus and does not use the non-realtime segment upload path. Qwen-ASR realtime models do not send `prompt`, `enable_lid`, or `enable_itn`.
+Upstream supports PCM or Opus at 16000 / 8000 Hz; this adapter consistently uses 16000 Hz PCM16. Client input is not converted to Ogg / Opus and does not use the non-realtime segment upload path. Qwen-ASR realtime models do not send `prompt` or `enable_itn`.
 
 See the upstream [Qwen-ASR Realtime WebSocket API](https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process), [client events](https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-asr-realtime-client-events), and [server events](https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-asr-realtime-server-events). Model names and dated versions are listed in the [official model documentation](https://help.aliyun.com/zh/model-studio/qwen3-asr-flash-realtime).
 
@@ -815,6 +721,20 @@ This section covers only non-realtime Flash models, excluding Streaming, Realtim
     "format": "ogg",
     "sample_rate": "16000"
   }
+}
+```
+
+### `qwen3-asr-flash-filetrans*`
+
+Submit an asynchronous task to `POST <DASHSCOPE_HTTP_BASE_URL>/services/audio/asr/transcription` and poll `/tasks/<task_id>`. This model requires a public HTTP/HTTPS audio URL; configure WebDAV in this service instead of temporary `oss://` uploads. On success, download the transcript from `output.result.transcription_url`.
+
+Send `enable_itn` inside `parameters`. Map `language` to `parameters.language` and `prompt` to `parameters.corpus.text`. Preprocessing produces mono audio, so `channel_id` is `[0]`.
+
+```json
+{
+  "model": "qwen3-asr-flash-filetrans",
+  "input": {"file_url": "https://files.example.com/audio.ogg"},
+  "parameters": {"channel_id": [0], "enable_itn": false}
 }
 ```
 

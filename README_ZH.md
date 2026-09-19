@@ -2,7 +2,7 @@
 
 # Qwen STT Compatible
 
-Qwen STT Compatible 是一个 Go 实现的 OpenAI 风格语音转写服务。非实时模型通过 HTTP 调用 DashScope ASR，音频预处理由 Go 依赖库 [Joey-Kot/ASR-Audio-Preprocess](https://github.com/Joey-Kot/ASR-Audio-Preprocess) 完成；实时模型通过 WebSocket 持续发送音频并接收识别结果，支持文件 SSE 和 OpenAI Realtime 转写会话。
+Qwen STT Compatible 是一个 Rust 实现的 OpenAI 风格语音转写服务。非实时模型通过 HTTP 调用 DashScope ASR，音频预处理由 Rust 依赖库 [Joey-Kot/ASR-Audio-Preprocess](https://github.com/Joey-Kot/ASR-Audio-Preprocess) 完成；实时模型通过 WebSocket 持续发送音频并接收识别结果，支持文件 SSE 和 OpenAI Realtime 转写会话。
 
 ## 下载
 
@@ -14,54 +14,6 @@ Qwen STT Compatible 是一个 Go 实现的 OpenAI 风格语音转写服务。非
 | Windows arm64 | [windows-arm64](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-windows-arm64.zip) | [sha256](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-windows-arm64.zip.sha256) |
 | macOS x86_64 | [macos-x86_64](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-darwin-amd64.tar.gz) | [sha256](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-darwin-amd64.tar.gz.sha256) |
 | macOS arm64 | [macos-arm64](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-darwin-arm64.tar.gz) | [sha256](https://github.com/Joey-Kot/Qwen-STT-Compatible/releases/download/Latest/qwen-stt-compatible-darwin-arm64.tar.gz.sha256) |
-
-## 裁剪性能测试
-
-测试运行于 AMD Ryzen 9 5950X 虚拟化环境，完配 32 个 vCPU，启用 WebDAV 与内存盘模式。测试期间 CPU 峰值尖刺不超过 30%，通常在 6%–15% 之间波动。内存盘与 SSD 的实测差异几乎可以忽略，当前瓶颈不在本地临时文件读写；测试在内网环境完成，文件传输速度略快于公网。
-
-三个样本均截取自电影音频的 `00:10:00`–`00:30:00` 片段，原始时长均为 20 分钟，内容包含人物交替或重叠说话、说话距离和音量变化、环境声与配乐。测试模型为 `qwen3-asr-flash`：英语样本为《钢铁侠 1》（6 声道、48.0 kHz、37.3 MiB、Opus），日语样本为《你的名字》（6 声道、48.0 kHz、39.8 MiB、Opus），中文样本为《让子弹飞》（2 声道、48.0 kHz、11.8 MiB、Opus）。
-
-测试使用以下参数：
-
-```bash
-MAX_UPLOAD_MB="500"
-UPSTREAM_TIMEOUT_SECONDS="10"
-API_CONCURRENCY="15"
-API_SEGMENT_LENGTH="175"
-
-FFMPEG_SEGMENT_LENGTH="5"
-FFMPEG_WORKS="16"
-SKIP_TRIM="false"
-SEGMENT_WORKERS="0"
-LIBAV_CODEC_THREADS="0"
-SILENT_INTERVAL="700"
-PADDING_LENGTH="100"
-OUTPUT_BITRATE="" # 未显式设置，采用默认值 128k
-
-ENABLE_LID="true"
-ENABLE_ITN="false"
-
-ASR_RETRY_MAX_ATTEMPTS="3"
-ASR_RETRY_INITIAL_DELAY="0.5"
-ASR_RETRY_FACTOR="2.0"
-ASR_RETRY_MAX_DELAY="8.0"
-```
-
-性能测试均使用 `SKIP_TRIM=false`。端到端耗时取 `curl` 输出的总耗时；预处理耗时从服务收到请求到输出 `segments merged_duration` 日志计算，按秒取整。裁剪率为裁剪掉的时长占原始时长的比例；端到端倍速为原始时长除以端到端耗时，裁剪后倍速为裁剪后音频时长除以端到端耗时。
-
-| 指标 | 《钢铁侠 1》英语 | 《你的名字》日语 | 《让子弹飞》中文 |
-|---|---:|---:|---:|
-| 原始时长 | 20m 0.007s | 20m 0.006s | 20m 0.007s |
-| 裁剪后时长 | 17m 8.862s | 15m 35.705s | 15m 34.507s |
-| 裁剪率 | 14.26% | 22.03% | 22.12% |
-| 预处理耗时 | 约 10s | 约 9s | 约 6s |
-| 端到端耗时 | 19s | 16s | 11s |
-| 端到端倍速 | 63.2× | 75.0× | 109.1× |
-| 裁剪后倍速 | 54.2× | 58.5× | 85.0× |
-| 准确率 | 95%–96% | 96%–97% | 97%–98% |
-| 转写结果 | [查看](testdata/performance/transcripts/ironman1.txt) | [查看](<testdata/performance/transcripts/yourname..txt>) | [查看](<testdata/performance/transcripts/Let the Bullets Fly.txt>) |
-
-准确率以官方原语言字幕为参考，由大模型结合转写结果、人工抽查辅助校对获得。由于官方字幕并非严格逐字稿，校对时会根据实际对白补充或修正字幕内容；统计忽略标点符号、断句和字幕分段差异。该指标用于衡量主要语义内容及文字识别的正确程度，不等同于标准 CER/WER。
 
 ## 特性
 
@@ -79,7 +31,7 @@ ASR_RETRY_MAX_DELAY="8.0"
 
 ### 音频处理与上传
 
-- 非实时音频默认经过转码、固定分片并发静音裁剪、合并，再按静音区间并发导出和编码 ASR 分片；`SKIP_TRIM=true` 或请求 `stream=true` 时跳过裁剪和合并
+- 非实时音频由 Rust 音频库检测语音并导出符合限制的 Ogg/Opus 分片；`SKIP_TRIM=true` 或非实时 `stream=true` 保留内部停顿。服务并发识别返回的文件，并按原始顺序合并结果。
 - 非实时分片统一使用 Ogg + Opus，按模型支持的采样率转换；支持 Base64 和 URL 上传，并校验对应的音频大小限制，详见[音频分片存储与上传](#音频分片存储与上传)
 - 实时音频使用连续 PCM 传输，不裁剪静音、不拆成独立识别任务，也不需要音频公网 URL
 
@@ -99,9 +51,8 @@ ASR_RETRY_MAX_DELAY="8.0"
 - `model`：模型名，原样透传给 DashScope；支持清单见下方“支持模型”
 - `language`：可选，2–3 字母语言码，如 `zh`、`en`、`yue`；实时模型还会按具体型号检查语种支持
 - `prompt`：可选；非实时 Qwen3-ASR-Flash 使用 system 上下文，同步 Qwen-Audio-3.0-ASR-Flash / Fun-ASR-Flash 使用 `input_text` 消息，Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR 使用 `input.context`；实时型号按下方上下文能力限制校验，Qwen3-ASR-Flash-Realtime 和 Paraformer-Realtime 不支持非空 `prompt`
-- `enable_lid`：兼容字段，当前支持的模型不会将其传给上游
-- `enable_itn`：可选，非实时模型默认读取服务配置 `ENABLE_ITN` / `--enable-itn`；实时模型忽略此字段
-- `stream`：可选，默认 `false`；设为 `true` 时返回 SSE，非实时模型同时强制跳过固定切片静音裁剪和合并
+- `enable_itn`：可选，仅对非实时 `qwen3-asr-flash*` 和 `qwen3-asr-flash-filetrans*` 生效。未传时使用 `ENABLE_ITN` / `--enable-itn`，显式传入 `true` 或 `false` 覆盖默认值；其他模型忽略此字段。
+- `stream`：可选，默认 `false`；设为 `true` 时返回 SSE，非实时模型同时强制跳过非语音裁剪
 - `response_format`：实时模型仅支持省略或 `json`
 
 示例：
@@ -121,7 +72,6 @@ curl -X POST "http://localhost:8080/v1/audio/transcriptions" \
 {"status":"success","text":"..."}
 ```
 
-非实时模型使用 `stream=true` 时，本次请求强制按 `SKIP_TRIM=true` 处理，即使服务配置为 `false` 也跳过固定切片静音裁剪和合并。统一转 WAV 后，仍按 `API_SEGMENT_LENGTH` 分片，由 `SEGMENT_WORKERS` 控制分片导出和编码并发，`API_CONCURRENCY` 控制上游识别并发；`FFMPEG_SEGMENT_LENGTH` 和 `FFMPEG_WORKS` 不参与裁剪。此覆盖不修改全局配置，也不影响其他请求。
 
 伪流式响应仍在全部分片识别结束后输出：
 
@@ -294,6 +244,7 @@ VAD 断句后，手动提交的 100 ms 下限按已确认语音边界之后的�
 | `paraformer-realtime-v2*` | `paraformer-realtime-v2` | WebSocket 实时识别，二进制 PCM，上游使用 24000 Hz |
 | `paraformer-realtime-v1*` | `paraformer-realtime-v1` | WebSocket 实时识别，上游固定 16000 Hz |
 | `paraformer-realtime-8k-v2*` / `paraformer-realtime-8k-v1*` | `paraformer-realtime-8k-v2`、`paraformer-realtime-8k-v1` | WebSocket 实时识别，上游固定 8000 Hz |
+| `qwen3-asr-flash-filetrans*` | `qwen3-asr-flash-filetrans` | `POST /services/audio/asr/transcription` 异步任务，使用公网 URL；本服务需配置 WebDAV |
 | `qwen-audio-3.0-asr-flash-filetrans*` | `qwen-audio-3.0-asr-flash-filetrans` | `POST /services/audio/asr/transcription` 异步任务，使用 URL，轮询 `/tasks/<task_id>` |
 | `qwen-audio-3.0-asr-flash*` | `qwen-audio-3.0-asr-flash` | `POST /services/aigc/multimodal-generation/generation`，`input_audio` 请求结构 |
 | `qwen3-asr-flash*` | `qwen3-asr-flash`、`qwen3-asr-flash-2025-09-08` | `POST /services/aigc/multimodal-generation/generation`，Qwen3 ASR multimodal 请求结构 |
@@ -336,15 +287,11 @@ REALTIME_IDLE_TIMEOUT_SECONDS="120"
 
 API_CONCURRENCY="10"
 API_SEGMENT_LENGTH="175"
-FFMPEG_WORKS="16"
-FFMPEG_SEGMENT_LENGTH="5"
 SKIP_TRIM="false"
-SEGMENT_WORKERS="0"
-LIBAV_CODEC_THREADS="0"
-SILENT_INTERVAL="700"
+LIBAV_CODEC_THREADS="1"
 PADDING_LENGTH="100"
+VAD_START_THRESHOLD="0.6"
 OUTPUT_BITRATE="128k"
-ENABLE_LID="true"
 ENABLE_ITN="false"
 
 ASR_RETRY_MAX_ATTEMPTS="4"
@@ -365,12 +312,12 @@ HTTP 和两个 WebSocket 地址独立配置，不会相互推导。使用百炼�
 
 - Paraformer 实时协议仅支持北京地域，复用 `DASHSCOPE_WS_URL`；默认地址 `wss://dashscope.aliyuncs.com/api-ws/v1/inference` 仍可使用。
 - 密钥、业务空间与地域需匹配。`DASHSCOPE_WORKSPACE` 用于发送实时上游的 `X-DashScope-WorkSpace` 请求头。
-- 非实时链路向 DashScope、OSS 和 WebDAV 发起的请求优先协商 HTTP/2，但不复用 keep-alive 连接：每个请求新建 TCP/TLS 连接，完成后关闭。实时链路在一个上游任务期间保持 WebSocket 连接。
+- 非实时链路向 DashScope、OSS 和 WebDAV 发起的请求优先协商 HTTP/2，并通过 HTTP 客户端的连接池复用连接。实时链路在一个上游任务期间保持 WebSocket 连接。
 
 ### 上传与存储
 
 - `MAX_UPLOAD_MB` 控制单个上传音频文件的大小上限，默认 `500` MiB，可用 `--max-upload-mb` 覆盖。
-- `WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 同时设置时启用 WebDAV；否则，URL 输入模型使用 DashScope SDK 的内置临时 OSS。
+- `WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 同时设置时启用 WebDAV；否则，URL 输入模型使用 内置 DashScope 临时 OSS 流程。
 - `WEBDAV_CREDENTIALS` 格式为 `user@password`，密码可以包含额外的 `@`。
 - WebDAV 配置不影响直接使用 Base64 Data URI 的 Qwen3-ASR-Flash、Qwen-Audio-3.0-ASR-Flash（非 Filetrans）和 Fun-ASR-Flash。
 
@@ -378,23 +325,23 @@ HTTP 和两个 WebSocket 地址独立配置，不会相互推导。使用百炼�
 
 ### 非实时音频处理
 
+预处理仅通过 Rust 库调用：传入文件和配置，取得有序输出文件及处理信息。默认 `process` 模式裁剪非语音，`SKIP_TRIM=true` 或非实时 `stream=true` 使用 `split` 模式保留内部停顿；两种模式均使用库内置的语音检测。无语音时返回成功及空文本。分片同时受时长和上游文件大小限制；`API_CONCURRENCY` 控制识别并发。`PADDING_LENGTH` 允许 `0`–`1000` 毫秒。
+
+`VAD_START_THRESHOLD` / `--vad-start-threshold` 默认 `0.6`，仅接受 `0.5`–`1.0` 的有限数值。它控制语音片段启动检测的严格程度，在 `process` 和 `split` 模式下均生效，不影响实时模型的上游 VAD。
+
 ASR 分片统一使用 `ogg` 容器和 `libopus` 编码，不按原始文件扩展名做模型格式白名单校验。`paraformer-8k*` 使用 8000 Hz，其他非实时模型使用 16000 Hz。
 
 | 配置 | 作用与默认行为 |
 |---|---|
 | `OUTPUT_BITRATE` / `--output-bitrate` | Opus 码率，默认 `128k` |
-| `SEGMENT_WORKERS` / `--segment-workers` | ASR 分片导出和编码并发数；`0` 表示由预处理库按 CPU 自动选择 |
-| `LIBAV_CODEC_THREADS` / `--libav-codec-threads` | 每条 libav pipeline 的 decoder/encoder 线程数；`0` 表示使用 libav 默认策略 |
-| `SKIP_TRIM` / `--skip-trim` | 默认 `false`；设为 `true` 或 `1` 时跳过固定切片静音裁剪和合并，统一转 WAV 后直接按静音区间分片 |
-
-调大并发或线程数时，需要同时考虑 `FFMPEG_WORKS`，避免 Go worker 和 libav codec 线程叠加后过量并发。
+| `LIBAV_CODEC_THREADS` / `--libav-codec-threads` | 原生编码线程数，默认 `1`；`0` 允许库自动选择 |
+| `SKIP_TRIM` / `--skip-trim` | 默认 `false`，使用库的 `process` 模式；为 `true` 时使用 `split` 模式，保留内部停顿 |
 
 非实时模型的 `stream=true` 请求强制跳过裁剪和合并；`stream=false` 或省略时遵循 `SKIP_TRIM` 配置。实时模型的处理链路不受此配置影响。
 
 ### 识别选项与鉴权
 
-- `ENABLE_LID` / `enable_lid` 仅作为兼容配置保留，当前支持的模型不会将其传给上游。
-- `ENABLE_ITN` 控制非实时请求未传 `enable_itn` 时的默认值；请求字段一旦传入，会覆盖服务配置默认值。
+- `ENABLE_ITN` 默认 `false`，仅用于非实时 Qwen3-ASR-Flash 和 Qwen3-ASR-Flash-Filetrans。同步请求发送 `parameters.asr_options.enable_itn`，异步请求发送 `parameters.enable_itn`；请求字段覆盖服务默认值。
 - 生产部署建议通过环境变量传入 `API_TOKEN` 和 `DASHSCOPE_API_KEY`，避免密钥出现在进程命令行里；本地测试也可使用 `--api-token` 和 `--dashscope-api-key`。
 
 ### 配置作用域
@@ -403,33 +350,35 @@ ASR 分片统一使用 `ogg` 容器和 `libopus` 编码，不按原始文件扩�
 |---|---|
 | 通用 | `LISTEN`、`API_TOKEN`、`DASHSCOPE_API_KEY`；`MAX_UPLOAD_MB` 作用于文件上传入口 |
 | 非实时 | `DASHSCOPE_HTTP_BASE_URL`、`WEBDAV_URL`、`WEBDAV_CREDENTIALS`、`UPSTREAM_TIMEOUT_SECONDS`、`API_CONCURRENCY` |
-| 非实时音频处理 | `API_SEGMENT_LENGTH`、`FFMPEG_SEGMENT_LENGTH`、`FFMPEG_WORKS`、`SKIP_TRIM`、`SEGMENT_WORKERS`、`LIBAV_CODEC_THREADS`、`SILENT_INTERVAL`、`PADDING_LENGTH`、`OUTPUT_BITRATE` |
-| 非实时识别选项 | `ENABLE_LID`、`ENABLE_ITN`、全部 `ASR_RETRY_*`；实时模式不读取这些选项 |
+| 非实时音频处理 | `API_SEGMENT_LENGTH`、`SKIP_TRIM`、`LIBAV_CODEC_THREADS`、`PADDING_LENGTH`、`VAD_START_THRESHOLD`、`OUTPUT_BITRATE` |
+| 非实时识别选项 | `ENABLE_ITN`、全部 `ASR_RETRY_*`；实时模式不读取这些选项 |
 | 实时 | `DASHSCOPE_WS_URL`（Fun-ASR / Paraformer 协议）、`DASHSCOPE_QWEN_WS_URL`（Qwen-ASR 协议）、`DASHSCOPE_WORKSPACE`、全部 `REALTIME_*` |
 
 `REALTIME_CONCURRENCY` 同时限制实时文件请求和客户端 WebSocket 会话数，超出返回 HTTP 429，不排队。一个 WebSocket 会话最多对应 4 个尚未结束的上游任务。实时超时分别限制握手、启动等待、结束等待和单次写入，不作为整场录音的总时限；`REALTIME_IDLE_TIMEOUT_SECONDS` 限制客户端 WebSocket 连续未发送消息的时间。
 
-非实时重试参数及预处理并发参数的范围检查在非实时请求执行时进行，不阻止仅使用实时识别的服务启动。命令行参数本身的类型和语法错误仍在启动时返回。
+非实时重试、分片时长和留白参数的范围检查在非实时请求执行时进行。命令行参数本身的类型和语法错误仍在启动时返回。
 
 ## 本地构建
 
-实时文件接口需要系统 `PATH` 中提供 `ffmpeg`。持续 PCM 的 WebSocket 入口不依赖 FFmpeg 可执行文件；8k 和 16k 重采样在 Go 中完成。
+实时文件接口需要系统 `PATH` 中提供 `ffmpeg`。持续 PCM 的 WebSocket 入口不依赖 FFmpeg 可执行文件；8k 和 16k 重采样在 Rust 中完成。
 
-预处理库需要 `libav` build tag，并且需要 FFmpeg/libav 静态依赖。项目脚本会委托当前 `go.mod` 中 `github.com/Joey-Kot/ASR-Audio-Preprocess` 依赖包提供的构建脚本：
+需要 Rust 1.98.1，以及 C/C++ 编译器、make、autotools、pkg-config、curl、tar/xz。音频库固定在 `Cargo.toml` 的 Git 提交，原生构建脚本与该版本一致。脚本将依赖安装到项目目录；音频库静态链接，Linux 系统运行库仍动态链接。
 
 ```bash
 ./scripts/bootstrap-static-audio-deps.sh
 
-CGO_ENABLED=1 \
-PKG_CONFIG_PATH="$PWD/third_party/ffmpeg-audio/lib/pkgconfig" \
-PKG_CONFIG="pkg-config --static" \
-go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-static'" -o qwen-stt-compatible ./cmd/server
+export PKG_CONFIG_PATH="$PWD/third_party/ffmpeg-audio/lib/pkgconfig"
+cargo build --locked --release
+cargo fmt --all --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 ```
+
 
 完整启动参数示例：
 
 ```bash
-./qwen-stt-compatible \
+./target/release/qwen-stt-compatible \
   --api-token "sk-aaa,sk-bbb" \
   --dashscope-api-key "sk-xxx" \
   --listen ":8080" \
@@ -440,15 +389,11 @@ go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-
   --upstream-timeout 30s \
   --api-concurrency 10 \
   --api-segment-length 175s \
-  --fixed-slice-length 5s \
-  --fixed-slice-workers 16 \
   --skip-trim 0 \
-  --segment-workers 0 \
-  --libav-codec-threads 0 \
-  --silent-interval 700ms \
+  --libav-codec-threads 1 \
   --padding 100ms \
+  --vad-start-threshold 0.6 \
   --output-bitrate "128k" \
-  --enable-lid 1 \
   --enable-itn 0 \
   --asr-retry-max-attempts 3 \
   --asr-retry-initial-delay 500ms \
@@ -465,23 +410,18 @@ WEBDAV_URL="https://files.example.com/dav/asr" \
 WEBDAV_CREDENTIALS="user@password" \
 OUTPUT_BITRATE="128k" \
 SKIP_TRIM="false" \
-ENABLE_LID="true" \
 ENABLE_ITN="false" \
-./qwen-stt-compatible \
+./target/release/qwen-stt-compatible \
   --listen ":8080" \
   --dashscope-base-url "https://dashscope.aliyuncs.com/api/v1" \
   --max-upload-mb 500 \
   --upstream-timeout 30s \
   --api-concurrency 10 \
   --api-segment-length 175s \
-  --fixed-slice-length 5s \
-  --fixed-slice-workers 16 \
-  --segment-workers 0 \
-  --libav-codec-threads 0 \
-  --silent-interval 700ms \
+  --libav-codec-threads 1 \
   --padding 100ms \
+  --vad-start-threshold 0.6 \
   --output-bitrate "128k" \
-  --enable-lid 1 \
   --enable-itn 0 \
   --asr-retry-max-attempts 3 \
   --asr-retry-initial-delay 500ms \
@@ -512,15 +452,11 @@ ENABLE_ITN="false" \
 | `--upstream-timeout` | `30s` | `UPSTREAM_TIMEOUT_SECONDS` | 非实时 DashScope HTTP 请求超时时间 |
 | `--api-concurrency` | `10` | `API_CONCURRENCY` | 非实时 ASR 上游并发请求数，超出后排队 |
 | `--api-segment-length` | `175s` | `API_SEGMENT_LENGTH` | 单个 ASR 分片最大时长 |
-| `--fixed-slice-length` | `5s` | `FFMPEG_SEGMENT_LENGTH` | 固定分片静音裁剪的切片长度 |
-| `--fixed-slice-workers` | `16` | `FFMPEG_WORKS` | 固定分片静音裁剪并发数 |
-| `--skip-trim` | `false` | `SKIP_TRIM` | 跳过固定分片静音裁剪和合并，统一转码后直接按静音区间分片；支持 `0/1` 或 `true/false`；非实时 `stream=true` 请求强制启用 |
-| `--segment-workers` | `0` | `SEGMENT_WORKERS` | ASR 分片导出和编码并发数，`0` 表示按 CPU 自动选择 |
-| `--libav-codec-threads` | `0` | `LIBAV_CODEC_THREADS` | 单个 libav pipeline 的 decoder/encoder 线程数，`0` 表示 libav 默认策略 |
-| `--silent-interval` | `700ms` | `SILENT_INTERVAL` | 最短静音判定时长 |
+| `--skip-trim` | `false` | `SKIP_TRIM` | 使用 `split` 模式保留内部停顿；支持 `0/1` 或 `true/false`，非实时 `stream=true` 强制启用 |
+| `--libav-codec-threads` | `1` | `LIBAV_CODEC_THREADS` | 原生编码线程数；`0` 允许自动选择 |
 | `--padding` | `100ms` | `PADDING_LENGTH` | 非静音片段前后保留时长 |
+| `--vad-start-threshold` | `0.6` | `VAD_START_THRESHOLD` | 非实时音频预处理的 VAD 启动阈值，范围 `0.5`–`1.0`（含边界）；越高越严格 |
 | `--output-bitrate` | `128k` | `OUTPUT_BITRATE` | ASR 分片输出音频码率 |
-| `--enable-lid` | `true` | `ENABLE_LID` | 兼容配置，当前支持的模型不会将其传给上游 |
 | `--enable-itn` | `false` | `ENABLE_ITN` | 请求未传 `enable_itn` 时的默认值，支持 `0/1` 或 `true/false` |
 | `--asr-retry-max-attempts` | `4` | `ASR_RETRY_MAX_ATTEMPTS` | ASR 调用最大尝试次数 |
 | `--asr-retry-initial-delay` | `500ms` | `ASR_RETRY_INITIAL_DELAY` | ASR 重试初始等待时间 |
@@ -533,39 +469,9 @@ Release packages include the executable, `README.md`, `LICENSE`, `NOTICE`,
 
 ## 运行日志与临时文件
 
-服务启动后会自动清理系统临时目录下的历史请求目录：
+请求使用系统临时目录中的 `qwen-stt-*` 目录，正常结束或取消后释放。音频处理线程仍运行时保留其目录，取消会通知预处理库。进程被强制终止留下的目录由系统临时文件清理策略处理。
 
-```text
-<系统临时目录>/qwen-stt-compatible/<request_id>
-```
-
-正常请求结束时，也会删除本次请求的临时目录。
-
-每次转写请求会输出请求基础信息，不包含 API token、DashScope API Key 或音频内容：
-
-```text
-request=<request_id> endpoint=/v1/audio/transcriptions file=<filename> model=<model> language=<language> enable_lid=<bool> enable_itn=<bool>
-```
-
-实时文件请求改为记录 `mode=realtime` 和上游 `sample_rate`，不输出分片、裁剪日志；WebSocket 会话记录 `session=<session_id>` 的连接和关闭事件。实时 PCM 数据通过管道或内存传输，不生成 Ogg 分片，也不上传 OSS / WebDAV。
-
-非实时非流式请求在 `SKIP_TRIM=false` 时，固定切片静音裁剪成功会输出：
-
-```text
-fixed trim input_duration=<音频文件原始长度> fixed_slice_length=<固定切片长度> slices=<成功切片数量> trimmed_slices=<检测到静音并进行了裁剪的切片数量>
-```
-
-默认模式生成 ASR 分片后会输出：
-
-```text
-segments merged_duration=<切片合并后音频长度> asr_segments=<并发 ASR 分片数量>
-```
-
-非实时请求配置 `SKIP_TRIM=true` 或请求 `stream=true` 时，不会输出固定裁剪日志，直接分片后会输出：
-
-```text
-segments skip_trim=true input_duration=<统一转码后音频长度> asr_segments=<并发 ASR 分片数量>
-```
+日志记录预处理状态、分片数、输入输出时长，以及上游 HTTP 方法、去除凭据及查询参数的地址、状态码和协议。WebSocket 记录会话关闭信息。不会记录鉴权头或音频内容；可用 `RUST_LOG` 控制日志级别。
 
 ## 音频分片存储与上传
 
@@ -758,7 +664,7 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
 
 手动模式结束输入时先发送 `input_audio_buffer.commit`，再发送 `session.finish`；VAD 模式仅发送 `session.finish`。持续接收结果，直到 `session.finished` 才关闭上游连接。项目按 `item_id` 关联并去重，`text` 的确认前缀转换为增量，`completed.transcript` 补齐最终文本；`stash` 不转换为下游增量。如果上游修改已确认的文本前缀，返回协议错误，避免输出无法撤回的错误拼接。
 
-上游支持 16000 / 8000 Hz 的 PCM 或 Opus，当前适配统一使用 16000 Hz PCM16；不将客户端输入改为 Ogg / Opus，也不使用非实时分片上传链路。Qwen-ASR 实时模型不发送 `prompt`、`enable_lid` 或 `enable_itn`。
+上游支持 16000 / 8000 Hz 的 PCM 或 Opus，当前适配统一使用 16000 Hz PCM16；不将客户端输入改为 Ogg / Opus，也不使用非实时分片上传链路。Qwen-ASR 实时模型不发送 `prompt` 或 `enable_itn`。
 
 上游格式参考 [Qwen-ASR 实时 WebSocket API](https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process)、[客户端事件](https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-asr-realtime-client-events)和[服务端事件](https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-asr-realtime-server-events)。型号与日期版本参见[官方模型说明](https://help.aliyun.com/zh/model-studio/qwen3-asr-flash-realtime)。
 
@@ -815,6 +721,20 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
     "format": "ogg",
     "sample_rate": "16000"
   }
+}
+```
+
+### `qwen3-asr-flash-filetrans*`
+
+使用 `POST <DASHSCOPE_HTTP_BASE_URL>/services/audio/asr/transcription` 提交异步任务，并通过 `/tasks/<task_id>` 轮询。该模型需要公网 HTTP/HTTPS 音频 URL，本服务需配置 WebDAV，不使用临时 `oss://` 上传。任务成功后读取 `output.result.transcription_url` 并下载文本结果。
+
+`enable_itn` 位于 `parameters` 中；`language` 映射为 `parameters.language`，`prompt` 映射为 `parameters.corpus.text`。预处理输出为单声道，因此 `channel_id` 固定为 `[0]`。
+
+```json
+{
+  "model": "qwen3-asr-flash-filetrans",
+  "input": {"file_url": "https://files.example.com/audio.ogg"},
+  "parameters": {"channel_id": [0], "enable_itn": false}
 }
 ```
 

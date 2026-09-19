@@ -19,3 +19,7 @@ temp/
 
 .DS_Store
 Thumbs.db
+target/
+third_party/
+dist/
+rust-migration-tmp/

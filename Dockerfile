@@ -1,41 +1,24 @@
 # syntax=docker/dockerfile:1
-
-FROM golang:1.26.4-bookworm AS build
-
-ARG TARGETOS
-ARG TARGETARCH
-
+FROM rust:1.98.1-bookworm AS build
 WORKDIR /src
-COPY go.mod go.sum* /src/
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
-
-COPY . /src
-
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential autoconf automake libtool pkg-config curl xz-utils tar ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-
-RUN --mount=type=cache,target=/root/.cache/go-build \
-    set -eux; \
-    export JOBS="${JOBS:-2}"; \
-    ./scripts/bootstrap-static-audio-deps.sh; \
-    grep -q '#define CONFIG_ASPLIT_FILTER 1' third_party/src/ffmpeg-*/config_components.h; \
-    CGO_ENABLED=1 \
-    GOOS="${TARGETOS}" \
-    GOARCH="${TARGETARCH}" \
-    PKG_CONFIG_PATH="/src/third_party/ffmpeg-audio/lib/pkgconfig" \
-    PKG_CONFIG="pkg-config --static" \
-    go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-static'" -o /out/qwen-stt-compatible ./cmd/server
+COPY scripts/ /src/scripts/
+RUN JOBS=2 ./scripts/bootstrap-static-audio-deps.sh
+COPY Cargo.toml Cargo.lock rust-toolchain.toml /src/
+COPY src/ /src/src/
+ENV PKG_CONFIG_PATH=/src/third_party/ffmpeg-audio/lib/pkgconfig
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo build --locked --release && cp target/release/qwen-stt-compatible /usr/local/bin/qwen-stt-compatible
 
 FROM debian:bookworm-slim
-
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/*
-
-COPY --from=build /out/qwen-stt-compatible /usr/local/bin/qwen-stt-compatible
-
+COPY --from=build /usr/local/bin/qwen-stt-compatible /usr/local/bin/qwen-stt-compatible
 USER 65532:65532
 EXPOSE 8080
-
 ENTRYPOINT ["/usr/local/bin/qwen-stt-compatible"]
