@@ -24,7 +24,8 @@ jobs:
           - { runner: windows-2022, platform: windows, arch: amd64, target: x86_64-pc-windows-gnu, msystem: UCRT64, prefix: mingw-w64-ucrt-x86_64, compiler: gcc, ffmpeg_arch: x86_64, host: x86_64-w64-mingw32, opus_flags: "" }
           - { runner: windows-11-arm, platform: windows, arch: arm64, target: aarch64-pc-windows-gnullvm, msystem: CLANGARM64, prefix: mingw-w64-clang-aarch64, compiler: clang, ffmpeg_arch: aarch64, host: aarch64-w64-mingw32, opus_flags: "--disable-rtcd --disable-asm" }
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
       - name: Linux build tools
         if: runner.os == 'Linux'
         run: |
@@ -102,7 +103,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
       - uses: actions/download-artifact@v4
