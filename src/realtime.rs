@@ -16,7 +16,7 @@ use std::{
 };
 use tokio::{
     net::TcpStream,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     time::{Instant, timeout},
 };
 use tokio_tungstenite::{
@@ -296,6 +296,7 @@ pub struct Session {
     tx: mpsc::Sender<Request>,
     pub events: mpsc::Receiver<Event>,
     cancel: CancellationToken,
+    terminal: watch::Receiver<Option<String>>,
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -305,11 +306,23 @@ impl Drop for Session {
 impl Session {
     async fn command(&self, command: Command) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(Request { command, ack: tx })
-            .await
-            .map_err(|_| anyhow::anyhow!("upstream closed"))?;
-        rx.await?.map_err(anyhow::Error::msg)
+        if self.tx.send(Request { command, ack: tx }).await.is_err() {
+            return Err(self.closed_error().await);
+        }
+        match rx.await {
+            Ok(result) => result.map_err(anyhow::Error::msg),
+            Err(_) => Err(self.closed_error().await),
+        }
+    }
+    async fn closed_error(&self) -> anyhow::Error {
+        // The actor can drop its command receiver before publishing its error.
+        // Wait for the terminal reason independently of event-queue backpressure.
+        let mut terminal = self.terminal.clone();
+        let message = match terminal.wait_for(Option::is_some).await {
+            Ok(reason) => reason.clone().unwrap(),
+            Err(_) => "upstream closed".into(),
+        };
+        anyhow::Error::msg(message)
     }
     pub async fn audio(&self, data: Vec<u8>) -> Result<()> {
         ensure!(data.len().is_multiple_of(2), "PCM must be sample-aligned");
@@ -415,16 +428,27 @@ pub async fn start(cfg: Arc<Config>, settings: Settings) -> Result<Session> {
     }).await??;
     let (tx, rx) = mpsc::channel(4);
     let (events, receiver) = mpsc::channel(32);
+    let (terminal_tx, terminal) = watch::channel(None);
     let cancel = CancellationToken::new();
     let token = cancel.clone();
     tokio::spawn(async move {
         let work = run(socket, rx, &events, cfg, settings, id, route.protocol);
-        tokio::select! { _=token.cancelled()=>{}, result=work=>{if let Err(e)=result {tokio::select! {_=token.cancelled()=>{},_=events.send(Event::Error(e.to_string()))=>{}}}} }
+        tokio::select! {
+            _=token.cancelled()=>{},
+            result=work=>{
+                let error=result.err().map(|e|e.to_string());
+                terminal_tx.send_replace(Some(error.clone().unwrap_or_else(||"upstream closed".into())));
+                if let Some(error)=error {
+                    tokio::select! {_=token.cancelled()=>{},_=events.send(Event::Error(error))=>{}}
+                }
+            }
+        }
     });
     Ok(Session {
         tx,
         events: receiver,
         cancel,
+        terminal,
     })
 }
 async fn run(
@@ -686,6 +710,64 @@ impl Normalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn closed_commands_preserve_terminal_error_with_full_event_queue() {
+        for queued in [false, true] {
+            let (tx, mut commands) = mpsc::channel::<Request>(1);
+            let (events, receiver) = mpsc::channel(1);
+            events.send(Event::Finished).await.unwrap();
+            let (terminal_tx, terminal) = watch::channel(None);
+            let session = Session {
+                tx,
+                events: receiver,
+                cancel: CancellationToken::new(),
+                terminal,
+            };
+            if !queued {
+                commands.close();
+            }
+            let actor = tokio::spawn(async move {
+                if queued {
+                    // Simulate a command accepted but never acknowledged when the actor fails.
+                    let request = commands.recv().await.unwrap();
+                    drop(request);
+                }
+                drop(commands);
+                tokio::task::yield_now().await;
+                terminal_tx.send_replace(Some("original upstream failure".into()));
+                // Publishing the event blocks; commands must still receive the real cause.
+                let _ = events
+                    .send(Event::Error("original upstream failure".into()))
+                    .await;
+            });
+            let error = timeout(Duration::from_secs(1), session.audio(vec![0, 0]))
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(error.to_string(), "original upstream failure");
+            drop(session);
+            actor.await.unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn closed_commands_without_terminal_reason_do_not_hang() {
+        let (tx, commands) = mpsc::channel(1);
+        let (_events, receiver) = mpsc::channel(1);
+        let (terminal_tx, terminal) = watch::channel(None);
+        let session = Session {
+            tx,
+            events: receiver,
+            cancel: CancellationToken::new(),
+            terminal,
+        };
+        drop(commands);
+        drop(terminal_tx);
+        let error = timeout(Duration::from_secs(1), session.audio(vec![0, 0]))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.to_string(), "upstream closed");
+    }
     #[test]
     fn strict_settings() {
         let s = Settings::new("qwen3-asr-flash-realtime".into());

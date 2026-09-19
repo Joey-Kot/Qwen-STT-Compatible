@@ -453,7 +453,8 @@ async fn realtime_file_errors_before_and_after_sse_starts() {
                 body["error"]["message"]
                     .as_str()
                     .unwrap()
-                    .contains("test failure")
+                    .contains("test failure"),
+                "unexpected error response: {body}"
             );
         }
     }
