@@ -113,7 +113,7 @@ func TestDuplexLifecycleAndFinalDeduplication(t *testing.T) {
 		wire(conn, id, "task-finished", nil)
 	})
 	defer server.Close()
-	s, err := testClient(server.URL).Start(context.Background(), Options{Model: "qwen-audio-3.0-asr-flash-streaming", SampleRate: 24000, Language: "zh", Prompt: "词表"})
+	s, err := testClient(server.URL).Start(context.Background(), Options{Model: "qwen-audio-3.1-asr-flash-streaming", SampleRate: 24000, Language: "zh", Prompt: "词表"})
 	if err != nil {
 		t.Fatal(err)
 	}

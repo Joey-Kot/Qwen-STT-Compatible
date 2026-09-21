@@ -26,6 +26,8 @@ type Route struct {
 const QwenRealtime = "qwen-realtime"
 const ParaformerRealtime = "paraformer-realtime"
 
+const qwenAudio3Prefix = "qwen-audio-3."
+
 type Mode string
 
 const (
@@ -40,11 +42,8 @@ var routes = []Route{
 	{Prefix: "paraformer-realtime-v2", SampleRate: 24000, Mode: Realtime, Protocol: ParaformerRealtime},
 	{Prefix: "paraformer-realtime-v1", SampleRate: 16000, Mode: Realtime, Protocol: ParaformerRealtime},
 	{Prefix: "qwen3-asr-flash-realtime", SampleRate: 16000, Mode: Realtime, Protocol: QwenRealtime},
-	{Prefix: "qwen-audio-3.0-asr-flash-streaming", SampleRate: 24000, Mode: Realtime},
 	{Prefix: "fun-asr-flash-8k-realtime", SampleRate: 8000, Mode: Realtime},
 	{Prefix: "fun-asr-realtime", SampleRate: 24000, Mode: Realtime},
-	{Prefix: "qwen-audio-3.0-asr-flash-filetrans", SampleRate: 16000, Mode: Async},
-	{Prefix: "qwen-audio-3.0-asr-flash", SampleRate: 16000, Mode: HTTP},
 	{Prefix: "qwen3-asr-flash", SampleRate: 16000, Mode: HTTP},
 	{Prefix: "fun-asr-flash", SampleRate: 16000, Mode: HTTP},
 	{Prefix: "fun-asr", SampleRate: 16000, Mode: Async},
@@ -52,12 +51,49 @@ var routes = []Route{
 	{Prefix: "paraformer", SampleRate: 16000, Mode: Async},
 }
 
+type qwenAudio3Route struct {
+	variant string
+	route   Route
+}
+
+var qwenAudio3Routes = []qwenAudio3Route{
+	{variant: "asr-flash-streaming", route: Route{Prefix: qwenAudio3Prefix, SampleRate: 24000, Mode: Realtime}},
+	{variant: "asr-flash-filetrans", route: Route{Prefix: qwenAudio3Prefix, SampleRate: 16000, Mode: Async}},
+	{variant: "asr-flash", route: Route{Prefix: qwenAudio3Prefix, SampleRate: 16000, Mode: HTTP}},
+}
+
+func IsQwenAudio3ASRFlashStreaming(model string) bool {
+	return isQwenAudio3Variant(model, "asr-flash-streaming")
+}
+
+func IsQwenAudio3ASRFlashFiletrans(model string) bool {
+	return isQwenAudio3Variant(model, "asr-flash-filetrans")
+}
+
+func IsQwenAudio3ASRFlash(model string) bool {
+	return isQwenAudio3Variant(model, "asr-flash")
+}
+
+func isQwenAudio3Variant(model, variant string) bool {
+	key := strings.ToLower(strings.TrimSpace(model))
+	remainder, ok := strings.CutPrefix(key, qwenAudio3Prefix)
+	if !ok {
+		return false
+	}
+	version, name, ok := strings.Cut(remainder, "-")
+	return ok && version != "" && strings.HasPrefix(name, variant)
+}
+
 func SupportsContext(model string) bool {
-	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "qwen-audio-3.0-asr-flash-streaming", "fun-asr-realtime", "fun-asr-realtime-2025-11-07":
+	if IsQwenAudio3ASRFlashStreaming(model) {
 		return true
 	}
-	return false
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "fun-asr-realtime", "fun-asr-realtime-2025-11-07":
+		return true
+	default:
+		return false
+	}
 }
 
 func IsParaformerV1(model string) bool {
@@ -91,6 +127,11 @@ func Match(name string) (Route, error) {
 	if key == "" {
 		return Route{}, fmt.Errorf("model is required")
 	}
+	for _, route := range qwenAudio3Routes {
+		if isQwenAudio3Variant(key, route.variant) {
+			return route.route, nil
+		}
+	}
 	for _, route := range routes {
 		if strings.HasPrefix(key, route.Prefix) {
 			return route, nil
@@ -117,6 +158,7 @@ func List() []string {
 		"qwen3-asr-flash-realtime-2026-02-10",
 		"qwen3-asr-flash-realtime-2025-10-27",
 		"qwen-audio-3.0-asr-flash-streaming",
+		"qwen-audio-3.1-asr-flash-streaming",
 		"fun-asr-realtime",
 		"fun-asr-realtime-2025-11-07",
 		"fun-asr-realtime-2026-02-28",
@@ -124,7 +166,9 @@ func List() []string {
 		"fun-asr-flash-8k-realtime",
 		"fun-asr-flash-8k-realtime-2026-01-28",
 		"qwen-audio-3.0-asr-flash-filetrans",
+		"qwen-audio-3.1-asr-flash-filetrans",
 		"qwen-audio-3.0-asr-flash",
+		"qwen-audio-3.1-asr-flash",
 		"qwen3-asr-flash",
 		"qwen3-asr-flash-2025-09-08",
 		"fun-asr",

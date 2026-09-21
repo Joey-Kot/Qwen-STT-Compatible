@@ -46,17 +46,43 @@ func TestParaformerRealtimeCapabilities(t *testing.T) {
 }
 
 func TestRealtimeRoutesPrecedeOfflinePrefixes(t *testing.T) {
-	for _, model := range []string{"qwen3-asr-flash-realtime", "qwen3-asr-flash-realtime-2026-02-10", "qwen-audio-3.0-asr-flash-streaming", "fun-asr-realtime-2026-02-28", "fun-asr-flash-8k-realtime-2026-01-28"} {
+	for _, model := range []string{"qwen3-asr-flash-realtime", "qwen3-asr-flash-realtime-2026-02-10", "qwen-audio-3.0-asr-flash-streaming", "qwen-audio-3.1-asr-flash-streaming", "fun-asr-realtime-2026-02-28", "fun-asr-flash-8k-realtime-2026-01-28"} {
 		route, err := Match(model)
 		if err != nil || route.Mode != Realtime {
 			t.Fatalf("%s: %+v %v", model, route, err)
 		}
 	}
-	for _, model := range []string{"qwen-audio-3.0-asr-flash", "qwen-audio-3.0-asr-flash-filetrans", "fun-asr-flash-2026-06-15", "fun-asr"} {
+	for _, model := range []string{"qwen-audio-3.0-asr-flash", "qwen-audio-3.0-asr-flash-filetrans", "qwen-audio-3.1-asr-flash", "qwen-audio-3.1-asr-flash-filetrans", "fun-asr-flash-2026-06-15", "fun-asr"} {
 		route, err := Match(model)
 		if err != nil || route.Mode == Realtime {
 			t.Fatalf("offline %s: %+v %v", model, route, err)
 		}
+	}
+}
+
+func TestQwenAudio3RoutesMatchAny3xMinorVersion(t *testing.T) {
+	tests := []struct {
+		model           string
+		mode            Mode
+		sampleRate      int
+		supportsContext bool
+	}{
+		{model: "qwen-audio-3.1-asr-flash-streaming", mode: Realtime, sampleRate: 24000, supportsContext: true},
+		{model: "qwen-audio-3.1-asr-flash-filetrans", mode: Async, sampleRate: 16000},
+		{model: "qwen-audio-3.1-asr-flash", mode: HTTP, sampleRate: 16000},
+		{model: "qwen-audio-3.12-asr-flash", mode: HTTP, sampleRate: 16000},
+	}
+	for _, tt := range tests {
+		route, err := Match(tt.model)
+		if err != nil || route.Mode != tt.mode || route.SampleRate != tt.sampleRate {
+			t.Fatalf("Match(%q) = %+v, %v", tt.model, route, err)
+		}
+		if got := SupportsContext(tt.model); got != tt.supportsContext {
+			t.Errorf("SupportsContext(%q) = %v, want %v", tt.model, got, tt.supportsContext)
+		}
+	}
+	if _, err := Match("qwen-audio-4.1-asr-flash"); err == nil {
+		t.Fatal("qwen-audio-4.1-asr-flash unexpectedly matched")
 	}
 }
 
@@ -99,6 +125,8 @@ func TestSampleRateMatchesModelPrefixWithoutAlias(t *testing.T) {
 	}{
 		{model: "qwen-audio-3.0-asr-flash-filetrans", want: 16000},
 		{model: "qwen-audio-3.0-asr-flash", want: 16000},
+		{model: "qwen-audio-3.1-asr-flash-filetrans", want: 16000},
+		{model: "qwen-audio-3.1-asr-flash", want: 16000},
 		{model: "qwen3-asr-flash-2025-09-08", want: 16000},
 		{model: "fun-asr-flash-2026-06-15", want: 16000},
 		{model: "fun-asr", want: 16000},
@@ -125,6 +153,9 @@ func TestListIncludesAudio3AndFunASRFlash(t *testing.T) {
 	for _, model := range []string{
 		"qwen-audio-3.0-asr-flash-filetrans",
 		"qwen-audio-3.0-asr-flash",
+		"qwen-audio-3.1-asr-flash-streaming",
+		"qwen-audio-3.1-asr-flash-filetrans",
+		"qwen-audio-3.1-asr-flash",
 		"fun-asr-2025-11-07",
 		"fun-asr-mtl",
 		"fun-asr-flash-2026-06-15",

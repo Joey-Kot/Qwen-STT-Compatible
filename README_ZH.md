@@ -98,7 +98,7 @@ ASR_RETRY_MAX_DELAY="8.0"
 - `file`：音频文件
 - `model`：模型名，原样透传给 DashScope；支持清单见下方“支持模型”
 - `language`：可选，2–3 字母语言码，如 `zh`、`en`、`yue`；实时模型还会按具体型号检查语种支持
-- `prompt`：可选；非实时 Qwen3-ASR-Flash 使用 system 上下文，同步 Qwen-Audio-3.0-ASR-Flash / Fun-ASR-Flash 使用 `input_text` 消息，Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR 使用 `input.context`；实时型号按下方上下文能力限制校验，Qwen3-ASR-Flash-Realtime 和 Paraformer-Realtime 不支持非空 `prompt`
+- `prompt`：可选；非实时 Qwen3-ASR-Flash 使用 system 上下文，同步 Qwen-Audio-3.x-ASR-Flash / Fun-ASR-Flash 使用 `input_text` 消息，Qwen-Audio-3.x-ASR-Flash-Filetrans / Fun-ASR 使用 `input.context`；实时型号按下方上下文能力限制校验，Qwen3-ASR-Flash-Realtime 和 Paraformer-Realtime 不支持非空 `prompt`
 - `enable_lid`：兼容字段，当前支持的模型不会将其传给上游
 - `enable_itn`：可选，非实时模型默认读取服务配置 `ENABLE_ITN` / `--enable-itn`；实时模型忽略此字段
 - `stream`：可选，默认 `false`；设为 `true` 时返回 SSE，非实时模型同时强制跳过固定切片静音裁剪和合并
@@ -256,7 +256,7 @@ VAD 断句后，手动提交的 100 ms 下限按已确认语音边界之后的�
 ##### 会话配置
 
 - 支持局部更新。音频输入期间只能更新支持上下文的型号的 `prompt`；更换模型、语言或断句配置需先 `commit` 或 `clear`。
-- `prompt` 最多 400 个字符，仅 `qwen-audio-3.0-asr-flash-streaming`、`fun-asr-realtime`、`fun-asr-realtime-2025-11-07` 支持；其他型号传非空 `prompt` 返回错误。
+- `prompt` 最多 400 个字符，仅 `qwen-audio-3.x-asr-flash-streaming` 系列、`fun-asr-realtime`、`fun-asr-realtime-2025-11-07` 支持；其他型号传非空 `prompt` 返回错误。
 
 ##### 容量与并发限制
 
@@ -283,19 +283,19 @@ VAD 断句后，手动提交的 100 ms 下限按已确认语音边界之后的�
 
 ## 支持模型
 
-服务不做模型别名转换，`model` 字段会原样透传给 DashScope；内部只按模型名前缀选择对应 endpoint 和请求结构。
+服务不做模型别名转换，`model` 字段会原样透传给 DashScope；内部只按模型名模式选择对应 endpoint 和请求结构。
 
 | 模型前缀 | 示例模型名 | 调用方式 |
 |---|---|---|
 | `qwen3-asr-flash-realtime*` | `qwen3-asr-flash-realtime`、`qwen3-asr-flash-realtime-2026-02-10`、`qwen3-asr-flash-realtime-2025-10-27` | WebSocket 实时识别，Base64 PCM 音频事件，上游使用 16000 Hz |
-| `qwen-audio-3.0-asr-flash-streaming*` | `qwen-audio-3.0-asr-flash-streaming` | WebSocket 实时识别，二进制 PCM 音频 |
+| `qwen-audio-3.x-asr-flash-streaming*` | `qwen-audio-3.0-asr-flash-streaming`、`qwen-audio-3.1-asr-flash-streaming` | WebSocket 实时识别，二进制 PCM 音频 |
 | `fun-asr-realtime*` | `fun-asr-realtime`、`fun-asr-realtime-2025-11-07`、`fun-asr-realtime-2026-02-28`、`fun-asr-realtime-2025-09-15` | WebSocket 实时识别，二进制 PCM 音频 |
 | `fun-asr-flash-8k-realtime*` | `fun-asr-flash-8k-realtime`、`fun-asr-flash-8k-realtime-2026-01-28` | WebSocket 实时识别，上游固定 8000 Hz |
 | `paraformer-realtime-v2*` | `paraformer-realtime-v2` | WebSocket 实时识别，二进制 PCM，上游使用 24000 Hz |
 | `paraformer-realtime-v1*` | `paraformer-realtime-v1` | WebSocket 实时识别，上游固定 16000 Hz |
 | `paraformer-realtime-8k-v2*` / `paraformer-realtime-8k-v1*` | `paraformer-realtime-8k-v2`、`paraformer-realtime-8k-v1` | WebSocket 实时识别，上游固定 8000 Hz |
-| `qwen-audio-3.0-asr-flash-filetrans*` | `qwen-audio-3.0-asr-flash-filetrans` | `POST /services/audio/asr/transcription` 异步任务，使用 URL，轮询 `/tasks/<task_id>` |
-| `qwen-audio-3.0-asr-flash*` | `qwen-audio-3.0-asr-flash` | `POST /services/aigc/multimodal-generation/generation`，`input_audio` 请求结构 |
+| `qwen-audio-3.x-asr-flash-filetrans*` | `qwen-audio-3.0-asr-flash-filetrans`、`qwen-audio-3.1-asr-flash-filetrans` | `POST /services/audio/asr/transcription` 异步任务，使用 URL，轮询 `/tasks/<task_id>` |
+| `qwen-audio-3.x-asr-flash*` | `qwen-audio-3.0-asr-flash`、`qwen-audio-3.1-asr-flash` | `POST /services/aigc/multimodal-generation/generation`，`input_audio` 请求结构 |
 | `qwen3-asr-flash*` | `qwen3-asr-flash`、`qwen3-asr-flash-2025-09-08` | `POST /services/aigc/multimodal-generation/generation`，Qwen3 ASR multimodal 请求结构 |
 | `fun-asr-flash*` | `fun-asr-flash-2026-06-15` | `POST /services/aigc/multimodal-generation/generation`，`input_audio` 请求结构 |
 | `fun-asr*` | `fun-asr`、`fun-asr-2025-11-07`、`fun-asr-mtl` | `POST /services/audio/asr/transcription` 异步任务，使用 URL，轮询 `/tasks/<task_id>` |
@@ -303,7 +303,7 @@ VAD 断句后，手动提交的 100 ms 下限按已确认语音边界之后的�
 
 需要使用带日期或版本后缀的模型时，直接传完整模型名即可，例如 `qwen3-asr-flash-2025-09-08` 或 `fun-asr-flash-2026-06-15`。
 
-实时前缀优先于非实时 Flash / Fun-ASR / Paraformer 前缀匹配。`GET /v1/models` 返回已声明的型号；前缀路由不代表上游一定提供某个任意拼接的版本，具体可用性仍由所选地域和百炼账号决定。
+实时模型名模式优先于非实时 Flash / Fun-ASR / Paraformer 模式匹配。`GET /v1/models` 返回已声明的型号；模型名路由不代表上游一定提供某个任意拼接的版本，具体可用性仍由所选地域和百炼账号决定。
 
 Fun-ASR 协议的实时 `language` 映射为单元素 `language_hints`。普通型号支持 `zh en ja ko vi th id ms tl hi ar fr de es pt ru it nl sv da fi no el pl cs hu ro bg hr sk`；`fun-asr-realtime-2026-02-28` 仅支持 `zh en ja`，`fun-asr-realtime-2025-09-15` 仅支持 `zh en`，8k 实时型号仅支持 `zh`。
 
@@ -372,7 +372,7 @@ HTTP 和两个 WebSocket 地址独立配置，不会相互推导。使用百炼�
 - `MAX_UPLOAD_MB` 控制单个上传音频文件的大小上限，默认 `500` MiB，可用 `--max-upload-mb` 覆盖。
 - `WEBDAV_URL` 和 `WEBDAV_CREDENTIALS` 同时设置时启用 WebDAV；否则，URL 输入模型使用 DashScope SDK 的内置临时 OSS。
 - `WEBDAV_CREDENTIALS` 格式为 `user@password`，密码可以包含额外的 `@`。
-- WebDAV 配置不影响直接使用 Base64 Data URI 的 Qwen3-ASR-Flash、Qwen-Audio-3.0-ASR-Flash（非 Filetrans）和 Fun-ASR-Flash。
+- WebDAV 配置不影响直接使用 Base64 Data URI 的 Qwen3-ASR-Flash、Qwen-Audio-3.x-ASR-Flash（非 Filetrans）和 Fun-ASR-Flash。
 
 存储链路的工作方式与部署要求见[音频分片存储与上传](#音频分片存储与上传)。
 
@@ -569,7 +569,7 @@ segments skip_trim=true input_duration=<统一转码后音频长度> asr_segment
 
 ## 音频分片存储与上传
 
-本节仅适用于非实时模型。转写前，服务会将处理后的音频切成 `ogg + Opus` ASR 分片。Qwen3-ASR-Flash、Qwen-Audio-3.0-ASR-Flash、Fun-ASR-Flash 的分片会编码为 Base64 Data URI，编码后不得超过 10 MiB；Qwen-Audio-3.0-ASR-Flash-Filetrans、Fun-ASR、Paraformer 的分片通过 DashScope 临时 OSS 或自建 WebDAV URL 提供给百炼，文件不得超过 2 GiB。大小超限直接返回错误，不进入识别重试。
+本节仅适用于非实时模型。转写前，服务会将处理后的音频切成 `ogg + Opus` ASR 分片。Qwen3-ASR-Flash、Qwen-Audio-3.x-ASR-Flash、Fun-ASR-Flash 的分片会编码为 Base64 Data URI，编码后不得超过 10 MiB；Qwen-Audio-3.x-ASR-Flash-Filetrans、Fun-ASR、Paraformer 的分片通过 DashScope 临时 OSS 或自建 WebDAV URL 提供给百炼，文件不得超过 2 GiB。大小超限直接返回错误，不进入识别重试。
 
 ### 推荐：内存盘模式
 
@@ -663,7 +663,7 @@ WEBDAV_CREDENTIALS="username@passwd"
 
 ## DashScope 请求说明
 
-### `qwen-audio-3.0-asr-flash-streaming*` / `fun-asr-realtime*` / `fun-asr-flash-8k-realtime*`
+### `qwen-audio-3.x-asr-flash-streaming*` / `fun-asr-realtime*` / `fun-asr-flash-8k-realtime*`
 
 连接 `DASHSCOPE_WS_URL`，握手时发送 `Authorization: Bearer <DASHSCOPE_API_KEY>`，可选发送 `X-DashScope-WorkSpace`。
 
@@ -789,7 +789,7 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
 }
 ```
 
-### `qwen-audio-3.0-asr-flash*` / `fun-asr-flash*`
+### `qwen-audio-3.x-asr-flash*` / `fun-asr-flash*`
 
 本节仅指非实时 Flash 型号，不包括 Streaming、Realtime 或 Filetrans。使用 multimodal generation endpoint。每个分片会编码为 Base64 Data URI；Base64 编码结果必须小于或等于 10 MiB，超过时请求返回错误。
 
@@ -818,7 +818,7 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
 }
 ```
 
-### `qwen-audio-3.0-asr-flash-filetrans*` / `fun-asr*` / `paraformer*`
+### `qwen-audio-3.x-asr-flash-filetrans*` / `fun-asr*` / `paraformer*`
 
 本节仅指非实时异步型号。使用 `dashscope.audio.asr.Transcription.async_call` 同款异步任务：
 
@@ -827,8 +827,8 @@ Paraformer 结果没有文档定义的 `sentence_id`、`sentence_begin`。服务
 - 子任务成功后下载 `transcription_url` 并提取文本
 - 这些大文件异步模型不使用 Base64，音频通过 HTTP/HTTPS 公网 URL 或 REST API 支持的临时 `oss://` URL 提供
 - `X-DashScope-OssResourceResolve: enable` 仅在使用临时 `oss://` URL 时发送，HTTP/HTTPS URL 不携带该请求头
-- `prompt` 会作为 `input.context` 中的 `input_text` 发送给 Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR；Paraformer 不发送上下文
-- `language_hints` 会发送给 Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR
+- `prompt` 会作为 `input.context` 中的 `input_text` 发送给 Qwen-Audio-3.x-ASR-Flash-Filetrans / Fun-ASR；Paraformer 不发送上下文
+- `language_hints` 会发送给 Qwen-Audio-3.x-ASR-Flash-Filetrans / Fun-ASR
 - `language_hints` 仅对 `paraformer-v2` 发送；Paraformer v1、8k、MTL 等模型不会携带该参数
 
 提交任务请求体：

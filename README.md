@@ -98,7 +98,7 @@ Accuracy was assessed against official subtitles in the original language, using
 - `file`: audio file
 - `model`: model name, passed unchanged to DashScope; see Supported Models below
 - `language`: optional 2–3-letter language code, such as `zh`, `en`, or `yue`; realtime models also validate language support for the specific model
-- `prompt`: optional; non-realtime Qwen3-ASR-Flash uses system context, synchronous Qwen-Audio-3.0-ASR-Flash / Fun-ASR-Flash use an `input_text` message, and Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR use `input.context`. Realtime models validate context support as described below; Qwen3-ASR-Flash-Realtime and Paraformer-Realtime reject nonempty `prompt` values
+- `prompt`: optional; non-realtime Qwen3-ASR-Flash uses system context, synchronous Qwen-Audio-3.x-ASR-Flash / Fun-ASR-Flash use an `input_text` message, and Qwen-Audio-3.x-ASR-Flash-Filetrans / Fun-ASR use `input.context`. Realtime models validate context support as described below; Qwen3-ASR-Flash-Realtime and Paraformer-Realtime reject nonempty `prompt` values
 - `enable_lid`: compatibility field; currently supported models do not forward it upstream
 - `enable_itn`: optional; non-realtime models default to the service's `ENABLE_ITN` / `--enable-itn` setting; realtime models ignore this field
 - `stream`: optional, defaults to `false`; `true` returns SSE and also forces non-realtime models to skip fixed-slice silence trimming and merging
@@ -256,7 +256,7 @@ After VAD segmentation, the 100 ms minimum for manual commit counts only audio a
 ##### Session Configuration
 
 - Partial updates are supported. During audio input, only `prompt` can be updated, and only on models supporting context. Commit or clear before changing the model, language, or turn detection settings.
-- `prompt` is limited to 400 characters and supported only by `qwen-audio-3.0-asr-flash-streaming`, `fun-asr-realtime`, and `fun-asr-realtime-2025-11-07`. Other models reject nonempty prompts.
+- `prompt` is limited to 400 characters and supported only by the `qwen-audio-3.x-asr-flash-streaming` series, `fun-asr-realtime`, and `fun-asr-realtime-2025-11-07`. Other models reject nonempty prompts.
 
 ##### Capacity and Concurrency Limits
 
@@ -283,19 +283,19 @@ Interface structures follow [OpenAI file transcription](https://developers.opena
 
 ## Supported Models
 
-The service does not translate model aliases. It passes `model` unchanged to DashScope and uses model-name prefixes only to select the endpoint and request structure.
+The service does not translate model aliases. It passes `model` unchanged to DashScope and uses model-name patterns only to select the endpoint and request structure.
 
 | Model prefix | Example model names | Invocation |
 |---|---|---|
 | `qwen3-asr-flash-realtime*` | `qwen3-asr-flash-realtime`, `qwen3-asr-flash-realtime-2026-02-10`, `qwen3-asr-flash-realtime-2025-10-27` | Realtime WebSocket recognition, Base64 PCM audio events, 16000 Hz upstream |
-| `qwen-audio-3.0-asr-flash-streaming*` | `qwen-audio-3.0-asr-flash-streaming` | Realtime WebSocket recognition, binary PCM audio |
+| `qwen-audio-3.x-asr-flash-streaming*` | `qwen-audio-3.0-asr-flash-streaming`, `qwen-audio-3.1-asr-flash-streaming` | Realtime WebSocket recognition, binary PCM audio |
 | `fun-asr-realtime*` | `fun-asr-realtime`, `fun-asr-realtime-2025-11-07`, `fun-asr-realtime-2026-02-28`, `fun-asr-realtime-2025-09-15` | Realtime WebSocket recognition, binary PCM audio |
 | `fun-asr-flash-8k-realtime*` | `fun-asr-flash-8k-realtime`, `fun-asr-flash-8k-realtime-2026-01-28` | Realtime WebSocket recognition, fixed 8000 Hz upstream |
 | `paraformer-realtime-v2*` | `paraformer-realtime-v2` | Realtime WebSocket recognition, binary PCM, 24000 Hz upstream |
 | `paraformer-realtime-v1*` | `paraformer-realtime-v1` | Realtime WebSocket recognition, fixed 16000 Hz upstream |
 | `paraformer-realtime-8k-v2*` / `paraformer-realtime-8k-v1*` | `paraformer-realtime-8k-v2`, `paraformer-realtime-8k-v1` | Realtime WebSocket recognition, fixed 8000 Hz upstream |
-| `qwen-audio-3.0-asr-flash-filetrans*` | `qwen-audio-3.0-asr-flash-filetrans` | `POST /services/audio/asr/transcription`, asynchronous URL-based task, polling `/tasks/<task_id>` |
-| `qwen-audio-3.0-asr-flash*` | `qwen-audio-3.0-asr-flash` | `POST /services/aigc/multimodal-generation/generation`, `input_audio` request structure |
+| `qwen-audio-3.x-asr-flash-filetrans*` | `qwen-audio-3.0-asr-flash-filetrans`, `qwen-audio-3.1-asr-flash-filetrans` | `POST /services/audio/asr/transcription`, asynchronous URL-based task, polling `/tasks/<task_id>` |
+| `qwen-audio-3.x-asr-flash*` | `qwen-audio-3.0-asr-flash`, `qwen-audio-3.1-asr-flash` | `POST /services/aigc/multimodal-generation/generation`, `input_audio` request structure |
 | `qwen3-asr-flash*` | `qwen3-asr-flash`, `qwen3-asr-flash-2025-09-08` | `POST /services/aigc/multimodal-generation/generation`, Qwen3 ASR multimodal request structure |
 | `fun-asr-flash*` | `fun-asr-flash-2026-06-15` | `POST /services/aigc/multimodal-generation/generation`, `input_audio` request structure |
 | `fun-asr*` | `fun-asr`, `fun-asr-2025-11-07`, `fun-asr-mtl` | `POST /services/audio/asr/transcription`, asynchronous URL-based task, polling `/tasks/<task_id>` |
@@ -303,7 +303,7 @@ The service does not translate model aliases. It passes `model` unchanged to Das
 
 To use a dated or versioned model, pass its full name, such as `qwen3-asr-flash-2025-09-08` or `fun-asr-flash-2026-06-15`.
 
-Realtime prefixes are matched before non-realtime Flash / Fun-ASR / Paraformer prefixes. `GET /v1/models` returns declared models. Prefix routing does not imply that any arbitrarily constructed version exists upstream; availability depends on the selected region and Alibaba Cloud Model Studio account.
+Realtime patterns are matched before non-realtime Flash / Fun-ASR / Paraformer patterns. `GET /v1/models` returns declared models. Model-name routing does not imply that any arbitrarily constructed version exists upstream; availability depends on the selected region and Alibaba Cloud Model Studio account.
 
 The Fun-ASR realtime protocol maps `language` to a single-element `language_hints` array. Standard models support `zh en ja ko vi th id ms tl hi ar fr de es pt ru it nl sv da fi no el pl cs hu ro bg hr sk`; `fun-asr-realtime-2026-02-28` supports only `zh en ja`, `fun-asr-realtime-2025-09-15` only `zh en`, and 8k realtime models only `zh`.
 
@@ -372,7 +372,7 @@ The HTTP endpoint and the two WebSocket endpoints are configured independently; 
 - `MAX_UPLOAD_MB` limits the size of each uploaded audio file. It defaults to `500` MiB and can be overridden with `--max-upload-mb`.
 - WebDAV is enabled only when both `WEBDAV_URL` and `WEBDAV_CREDENTIALS` are set. Otherwise, URL-input models use the DashScope SDK's built-in temporary OSS flow.
 - `WEBDAV_CREDENTIALS` uses the format `user@password`; the password may contain additional `@` characters.
-- WebDAV settings do not affect Qwen3-ASR-Flash, Qwen-Audio-3.0-ASR-Flash (excluding Filetrans), or Fun-ASR-Flash, which use Base64 Data URIs directly.
+- WebDAV settings do not affect Qwen3-ASR-Flash, Qwen-Audio-3.x-ASR-Flash (excluding Filetrans), or Fun-ASR-Flash, which use Base64 Data URIs directly.
 
 See [Audio Segment Storage and Uploads](#audio-segment-storage-and-uploads) for storage behavior and deployment requirements.
 
@@ -569,7 +569,7 @@ segments skip_trim=true input_duration=<transcoded-audio-duration> asr_segments=
 
 ## Audio Segment Storage and Uploads
 
-This section applies only to non-realtime models. Before transcription, the service splits processed audio into `ogg + Opus` ASR segments. Segments for Qwen3-ASR-Flash, Qwen-Audio-3.0-ASR-Flash, and Fun-ASR-Flash are encoded as Base64 Data URIs and must not exceed 10 MiB after encoding. Segments for Qwen-Audio-3.0-ASR-Flash-Filetrans, Fun-ASR, and Paraformer are provided to Model Studio through DashScope temporary OSS or self-hosted WebDAV URLs, with a 2 GiB file limit. Oversized segments return an error directly, without recognition retries.
+This section applies only to non-realtime models. Before transcription, the service splits processed audio into `ogg + Opus` ASR segments. Segments for Qwen3-ASR-Flash, Qwen-Audio-3.x-ASR-Flash, and Fun-ASR-Flash are encoded as Base64 Data URIs and must not exceed 10 MiB after encoding. Segments for Qwen-Audio-3.x-ASR-Flash-Filetrans, Fun-ASR, and Paraformer are provided to Model Studio through DashScope temporary OSS or self-hosted WebDAV URLs, with a 2 GiB file limit. Oversized segments return an error directly, without recognition retries.
 
 ### Recommended: RAM Disk
 
@@ -663,7 +663,7 @@ WebDAV bypasses the built-in OSS policy and upload steps, avoiding pipeline stal
 
 ## DashScope Request Details
 
-### `qwen-audio-3.0-asr-flash-streaming*` / `fun-asr-realtime*` / `fun-asr-flash-8k-realtime*`
+### `qwen-audio-3.x-asr-flash-streaming*` / `fun-asr-realtime*` / `fun-asr-flash-8k-realtime*`
 
 Connect to `DASHSCOPE_WS_URL`, sending `Authorization: Bearer <DASHSCOPE_API_KEY>` during the handshake and optionally `X-DashScope-WorkSpace`.
 
@@ -789,7 +789,7 @@ Core request structure:
 }
 ```
 
-### `qwen-audio-3.0-asr-flash*` / `fun-asr-flash*`
+### `qwen-audio-3.x-asr-flash*` / `fun-asr-flash*`
 
 This section covers only non-realtime Flash models, excluding Streaming, Realtime, and Filetrans. It uses the multimodal generation endpoint. Each segment is encoded as a Base64 Data URI; the Base64-encoded data must be at most 10 MiB, otherwise the request returns an error.
 
@@ -818,7 +818,7 @@ This section covers only non-realtime Flash models, excluding Streaming, Realtim
 }
 ```
 
-### `qwen-audio-3.0-asr-flash-filetrans*` / `fun-asr*` / `paraformer*`
+### `qwen-audio-3.x-asr-flash-filetrans*` / `fun-asr*` / `paraformer*`
 
 This section covers only non-realtime asynchronous models. It uses the same asynchronous task flow as `dashscope.audio.asr.Transcription.async_call`:
 
@@ -827,8 +827,8 @@ This section covers only non-realtime asynchronous models. It uses the same asyn
 - After a subtask succeeds, download `transcription_url` and extract the text
 - These large-file asynchronous models do not use Base64; audio is provided through public HTTP/HTTPS URLs or temporary `oss://` URLs supported by the REST API
 - `X-DashScope-OssResourceResolve: enable` is sent only for temporary `oss://` URLs, not HTTP/HTTPS URLs
-- `prompt` is sent as `input_text` inside `input.context` for Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR; no context is sent for Paraformer
-- `language_hints` is sent for Qwen-Audio-3.0-ASR-Flash-Filetrans / Fun-ASR
+- `prompt` is sent as `input_text` inside `input.context` for Qwen-Audio-3.x-ASR-Flash-Filetrans / Fun-ASR; no context is sent for Paraformer
+- `language_hints` is sent for Qwen-Audio-3.x-ASR-Flash-Filetrans / Fun-ASR
 - For Paraformer, `language_hints` is sent only for `paraformer-v2`; v1, 8k, MTL, and other models do not receive it
 
 Task submission request body:

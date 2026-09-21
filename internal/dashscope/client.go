@@ -335,12 +335,12 @@ func (c *Client) transcribeAsyncTask(ctx context.Context, path, model string, op
 
 func supportsLanguageHints(model string) bool {
 	key := strings.ToLower(strings.TrimSpace(model))
-	return strings.HasPrefix(key, "qwen-audio-3.0-asr-flash-filetrans") || strings.HasPrefix(key, "fun-asr") || key == "paraformer-v2" || strings.HasPrefix(key, "paraformer-v2-")
+	return models.IsQwenAudio3ASRFlashFiletrans(model) || strings.HasPrefix(key, "fun-asr") || key == "paraformer-v2" || strings.HasPrefix(key, "paraformer-v2-")
 }
 
 func supportsAsyncContext(model string) bool {
 	key := strings.ToLower(strings.TrimSpace(model))
-	return strings.HasPrefix(key, "qwen-audio-3.0-asr-flash-filetrans") || strings.HasPrefix(key, "fun-asr")
+	return models.IsQwenAudio3ASRFlashFiletrans(model) || strings.HasPrefix(key, "fun-asr")
 }
 
 func asyncTaskHeaders(resourceURL string) map[string]string {
@@ -728,9 +728,9 @@ func (c *Client) endpoint(path string) string {
 func modelFamily(model string) string {
 	key := strings.ToLower(strings.TrimSpace(model))
 	switch {
-	case strings.HasPrefix(key, "qwen-audio-3.0-asr-flash-filetrans"):
+	case models.IsQwenAudio3ASRFlashFiletrans(model):
 		return "audio3-asr-filetrans"
-	case strings.HasPrefix(key, "qwen-audio-3.0-asr-flash"):
+	case models.IsQwenAudio3ASRFlash(model):
 		return "audio3-asr-flash"
 	case strings.HasPrefix(key, "fun-asr-flash"):
 		return "audio3-asr-flash"

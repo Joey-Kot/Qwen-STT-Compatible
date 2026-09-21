@@ -106,6 +106,8 @@ func TestModelFamilyPrefersFunASRFlashBeforeFunASR(t *testing.T) {
 	}{
 		{model: "qwen-audio-3.0-asr-flash-filetrans", want: "audio3-asr-filetrans"},
 		{model: "qwen-audio-3.0-asr-flash", want: "audio3-asr-flash"},
+		{model: "qwen-audio-3.1-asr-flash-filetrans", want: "audio3-asr-filetrans"},
+		{model: "qwen-audio-3.1-asr-flash", want: "audio3-asr-flash"},
 		{model: "fun-asr-flash-2026-06-15", want: "audio3-asr-flash"},
 		{model: "fun-asr", want: "fun-asr"},
 		{model: "paraformer-v1", want: "paraformer"},
@@ -126,6 +128,7 @@ func TestSupportsLanguageHints(t *testing.T) {
 		{model: "paraformer-v2", want: true},
 		{model: "paraformer-v2-2026-01-01", want: true},
 		{model: "qwen-audio-3.0-asr-flash-filetrans", want: true},
+		{model: "qwen-audio-3.1-asr-flash-filetrans", want: true},
 		{model: "paraformer-v1", want: false},
 		{model: "paraformer-8k-v1", want: false},
 		{model: "paraformer-mtl-v1", want: false},
@@ -144,6 +147,7 @@ func TestSupportsAsyncContext(t *testing.T) {
 		want  bool
 	}{
 		{model: "qwen-audio-3.0-asr-flash-filetrans", want: true},
+		{model: "qwen-audio-3.1-asr-flash-filetrans", want: true},
 		{model: "fun-asr", want: true},
 		{model: "fun-asr-mtl-2025-08-25", want: true},
 		{model: "paraformer-v2", want: false},
@@ -313,7 +317,7 @@ func TestTranscribeAudio3ASRFlashRequest(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
-			if got := body["model"]; got != "qwen-audio-3.0-asr-flash" {
+			if got := body["model"]; got != "qwen-audio-3.1-asr-flash" {
 				t.Errorf("model=%v", got)
 			}
 			messages := body["input"].(map[string]any)["messages"].([]any)
@@ -370,7 +374,7 @@ func TestTranscribeAudio3ASRFlashRequest(t *testing.T) {
 	text, err := client.TranscribeFile(
 		context.Background(),
 		file.Name(),
-		"qwen-audio-3.0-asr-flash",
+		"qwen-audio-3.1-asr-flash",
 		ASROptions{Language: "zh", SampleRate: 16000},
 		" 专有词：通义千问 ",
 	)
@@ -406,7 +410,7 @@ func TestTranscribeAudio3FiletransUsesPublicURL(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
-			if got := body["model"]; got != "qwen-audio-3.0-asr-flash-filetrans" {
+			if got := body["model"]; got != "qwen-audio-3.1-asr-flash-filetrans" {
 				t.Errorf("model=%v", got)
 			}
 			input := body["input"].(map[string]any)
@@ -463,7 +467,7 @@ func TestTranscribeAudio3FiletransUsesPublicURL(t *testing.T) {
 	text, err := client.TranscribeFile(
 		context.Background(),
 		file.Name(),
-		"qwen-audio-3.0-asr-flash-filetrans",
+		"qwen-audio-3.1-asr-flash-filetrans",
 		ASROptions{Language: "zh", SampleRate: 16000},
 		" 专有词：通义千问 ",
 	)
