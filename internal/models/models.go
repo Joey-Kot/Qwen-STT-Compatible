@@ -169,6 +169,7 @@ func List() []string {
 		"qwen-audio-3.1-asr-flash-filetrans",
 		"qwen-audio-3.0-asr-flash",
 		"qwen-audio-3.1-asr-flash",
+		"qwen-audio-3.1-asr-flash-message",
 		"qwen3-asr-flash",
 		"qwen3-asr-flash-2025-09-08",
 		"fun-asr",

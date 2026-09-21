@@ -52,7 +52,7 @@ func TestRealtimeRoutesPrecedeOfflinePrefixes(t *testing.T) {
 			t.Fatalf("%s: %+v %v", model, route, err)
 		}
 	}
-	for _, model := range []string{"qwen-audio-3.0-asr-flash", "qwen-audio-3.0-asr-flash-filetrans", "qwen-audio-3.1-asr-flash", "qwen-audio-3.1-asr-flash-filetrans", "fun-asr-flash-2026-06-15", "fun-asr"} {
+	for _, model := range []string{"qwen-audio-3.0-asr-flash", "qwen-audio-3.0-asr-flash-filetrans", "qwen-audio-3.1-asr-flash", "qwen-audio-3.1-asr-flash-message", "qwen-audio-3.1-asr-flash-filetrans", "fun-asr-flash-2026-06-15", "fun-asr"} {
 		route, err := Match(model)
 		if err != nil || route.Mode == Realtime {
 			t.Fatalf("offline %s: %+v %v", model, route, err)
@@ -70,6 +70,7 @@ func TestQwenAudio3RoutesMatchAny3xMinorVersion(t *testing.T) {
 		{model: "qwen-audio-3.1-asr-flash-streaming", mode: Realtime, sampleRate: 24000, supportsContext: true},
 		{model: "qwen-audio-3.1-asr-flash-filetrans", mode: Async, sampleRate: 16000},
 		{model: "qwen-audio-3.1-asr-flash", mode: HTTP, sampleRate: 16000},
+		{model: "qwen-audio-3.1-asr-flash-message", mode: HTTP, sampleRate: 16000},
 		{model: "qwen-audio-3.12-asr-flash", mode: HTTP, sampleRate: 16000},
 	}
 	for _, tt := range tests {
@@ -127,6 +128,7 @@ func TestSampleRateMatchesModelPrefixWithoutAlias(t *testing.T) {
 		{model: "qwen-audio-3.0-asr-flash", want: 16000},
 		{model: "qwen-audio-3.1-asr-flash-filetrans", want: 16000},
 		{model: "qwen-audio-3.1-asr-flash", want: 16000},
+		{model: "qwen-audio-3.1-asr-flash-message", want: 16000},
 		{model: "qwen3-asr-flash-2025-09-08", want: 16000},
 		{model: "fun-asr-flash-2026-06-15", want: 16000},
 		{model: "fun-asr", want: 16000},
@@ -156,6 +158,7 @@ func TestListIncludesAudio3AndFunASRFlash(t *testing.T) {
 		"qwen-audio-3.1-asr-flash-streaming",
 		"qwen-audio-3.1-asr-flash-filetrans",
 		"qwen-audio-3.1-asr-flash",
+		"qwen-audio-3.1-asr-flash-message",
 		"fun-asr-2025-11-07",
 		"fun-asr-mtl",
 		"fun-asr-flash-2026-06-15",

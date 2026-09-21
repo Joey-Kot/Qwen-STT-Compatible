@@ -108,6 +108,7 @@ func TestModelFamilyPrefersFunASRFlashBeforeFunASR(t *testing.T) {
 		{model: "qwen-audio-3.0-asr-flash", want: "audio3-asr-flash"},
 		{model: "qwen-audio-3.1-asr-flash-filetrans", want: "audio3-asr-filetrans"},
 		{model: "qwen-audio-3.1-asr-flash", want: "audio3-asr-flash"},
+		{model: "qwen-audio-3.1-asr-flash-message", want: "audio3-asr-flash"},
 		{model: "fun-asr-flash-2026-06-15", want: "audio3-asr-flash"},
 		{model: "fun-asr", want: "fun-asr"},
 		{model: "paraformer-v1", want: "paraformer"},
@@ -317,7 +318,7 @@ func TestTranscribeAudio3ASRFlashRequest(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
-			if got := body["model"]; got != "qwen-audio-3.1-asr-flash" {
+			if got := body["model"]; got != "qwen-audio-3.1-asr-flash-message" {
 				t.Errorf("model=%v", got)
 			}
 			messages := body["input"].(map[string]any)["messages"].([]any)
@@ -374,7 +375,7 @@ func TestTranscribeAudio3ASRFlashRequest(t *testing.T) {
 	text, err := client.TranscribeFile(
 		context.Background(),
 		file.Name(),
-		"qwen-audio-3.1-asr-flash",
+		"qwen-audio-3.1-asr-flash-message",
 		ASROptions{Language: "zh", SampleRate: 16000},
 		" 专有词：通义千问 ",
 	)

@@ -295,7 +295,7 @@ VAD 断句后，手动提交的 100 ms 下限按已确认语音边界之后的�
 | `paraformer-realtime-v1*` | `paraformer-realtime-v1` | WebSocket 实时识别，上游固定 16000 Hz |
 | `paraformer-realtime-8k-v2*` / `paraformer-realtime-8k-v1*` | `paraformer-realtime-8k-v2`、`paraformer-realtime-8k-v1` | WebSocket 实时识别，上游固定 8000 Hz |
 | `qwen-audio-3.x-asr-flash-filetrans*` | `qwen-audio-3.0-asr-flash-filetrans`、`qwen-audio-3.1-asr-flash-filetrans` | `POST /services/audio/asr/transcription` 异步任务，使用 URL，轮询 `/tasks/<task_id>` |
-| `qwen-audio-3.x-asr-flash*` | `qwen-audio-3.0-asr-flash`、`qwen-audio-3.1-asr-flash` | `POST /services/aigc/multimodal-generation/generation`，`input_audio` 请求结构 |
+| `qwen-audio-3.x-asr-flash*` | `qwen-audio-3.0-asr-flash`、`qwen-audio-3.1-asr-flash`、`qwen-audio-3.1-asr-flash-message` | `POST /services/aigc/multimodal-generation/generation`，`input_audio` 请求结构 |
 | `qwen3-asr-flash*` | `qwen3-asr-flash`、`qwen3-asr-flash-2025-09-08` | `POST /services/aigc/multimodal-generation/generation`，Qwen3 ASR multimodal 请求结构 |
 | `fun-asr-flash*` | `fun-asr-flash-2026-06-15` | `POST /services/aigc/multimodal-generation/generation`，`input_audio` 请求结构 |
 | `fun-asr*` | `fun-asr`、`fun-asr-2025-11-07`、`fun-asr-mtl` | `POST /services/audio/asr/transcription` 异步任务，使用 URL，轮询 `/tasks/<task_id>` |

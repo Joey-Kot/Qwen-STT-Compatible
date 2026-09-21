@@ -295,7 +295,7 @@ The service does not translate model aliases. It passes `model` unchanged to Das
 | `paraformer-realtime-v1*` | `paraformer-realtime-v1` | Realtime WebSocket recognition, fixed 16000 Hz upstream |
 | `paraformer-realtime-8k-v2*` / `paraformer-realtime-8k-v1*` | `paraformer-realtime-8k-v2`, `paraformer-realtime-8k-v1` | Realtime WebSocket recognition, fixed 8000 Hz upstream |
 | `qwen-audio-3.x-asr-flash-filetrans*` | `qwen-audio-3.0-asr-flash-filetrans`, `qwen-audio-3.1-asr-flash-filetrans` | `POST /services/audio/asr/transcription`, asynchronous URL-based task, polling `/tasks/<task_id>` |
-| `qwen-audio-3.x-asr-flash*` | `qwen-audio-3.0-asr-flash`, `qwen-audio-3.1-asr-flash` | `POST /services/aigc/multimodal-generation/generation`, `input_audio` request structure |
+| `qwen-audio-3.x-asr-flash*` | `qwen-audio-3.0-asr-flash`, `qwen-audio-3.1-asr-flash`, `qwen-audio-3.1-asr-flash-message` | `POST /services/aigc/multimodal-generation/generation`, `input_audio` request structure |
 | `qwen3-asr-flash*` | `qwen3-asr-flash`, `qwen3-asr-flash-2025-09-08` | `POST /services/aigc/multimodal-generation/generation`, Qwen3 ASR multimodal request structure |
 | `fun-asr-flash*` | `fun-asr-flash-2026-06-15` | `POST /services/aigc/multimodal-generation/generation`, `input_audio` request structure |
 | `fun-asr*` | `fun-asr`, `fun-asr-2025-11-07`, `fun-asr-mtl` | `POST /services/audio/asr/transcription`, asynchronous URL-based task, polling `/tasks/<task_id>` |
