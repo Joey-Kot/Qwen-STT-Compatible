@@ -17,6 +17,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -24,39 +25,53 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"qwen-stt-compatible/internal/config"
 )
 
-func TestNewHTTPClientUsesFreshHTTP2Connections(t *testing.T) {
-	var protocols, remoteAddrs []string
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		protocols = append(protocols, r.Proto)
-		remoteAddrs = append(remoteAddrs, r.RemoteAddr)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	defer server.Close()
+func TestNewHTTPClientReusesConnections(t *testing.T) {
+	for _, protocol := range []string{"HTTP/1.1", "HTTP/2.0"} {
+		t.Run(protocol, func(t *testing.T) {
+			var mu sync.Mutex
+			var protocols, remoteAddrs []string
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				protocols = append(protocols, r.Proto)
+				remoteAddrs = append(remoteAddrs, r.RemoteAddr)
+				mu.Unlock()
+				// Trailing whitespace must be drained after JSON decoding for HTTP/1.1 reuse.
+				_, _ = io.WriteString(w, `{"ok":true}`+strings.Repeat(" ", 16<<10))
+			}))
+			server.EnableHTTP2 = protocol == "HTTP/2.0"
+			server.StartTLS()
+			defer server.Close()
 
-	client := newHTTPClient(30 * time.Second)
-	transport := client.Transport.(*http.Transport)
-	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402 -- local test server only.
-	for range 2 {
-		resp, err := client.Get(server.URL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-	}
-
-	if len(protocols) != 2 || protocols[0] != "HTTP/2.0" || protocols[1] != "HTTP/2.0" {
-		t.Fatalf("protocols=%v want two HTTP/2.0 requests", protocols)
-	}
-	if remoteAddrs[0] == remoteAddrs[1] {
-		t.Fatalf("requests reused a connection: remote addresses=%v", remoteAddrs)
+			httpClient := newHTTPClient(30 * time.Second)
+			defer httpClient.CloseIdleConnections()
+			transport := httpClient.Transport.(*http.Transport)
+			transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402 -- local test server only.
+			client := New(Config{HTTPClient: httpClient})
+			for range 2 {
+				var payload map[string]bool
+				if err := client.doJSON(context.Background(), http.MethodGet, server.URL, nil, &payload, nil); err != nil {
+					t.Fatal(err)
+				}
+				if !payload["ok"] {
+					t.Fatal("response was not decoded")
+				}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(protocols) != 2 || protocols[0] != protocol || protocols[1] != protocol {
+				t.Fatalf("protocols=%v want two %s requests", protocols, protocol)
+			}
+			if remoteAddrs[0] != remoteAddrs[1] {
+				t.Fatalf("requests did not reuse a connection: remote addresses=%v", remoteAddrs)
+			}
+		})
 	}
 }
 

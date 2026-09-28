@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	smartaudio "github.com/Joey-Kot/ASR-Audio-Preprocess"
 
@@ -34,6 +35,7 @@ import (
 	"qwen-stt-compatible/internal/dashscope"
 	"qwen-stt-compatible/internal/models"
 	"qwen-stt-compatible/internal/realtime"
+	"qwen-stt-compatible/internal/requestlog"
 	"qwen-stt-compatible/internal/sse"
 )
 
@@ -128,7 +130,23 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	started := time.Now()
+	ctx := requestlog.WithRequestID(r.Context(), dashscope.RequestID())
+	_, webDAVPassword, _ := strings.Cut(s.cfg.WebDAVCredentials, "@")
+	ctx = requestlog.WithSecrets(ctx, s.cfg.APITokens...)
+	ctx = requestlog.WithSecrets(ctx, s.cfg.DashScopeAPIKey, webDAVPassword)
+	r = r.WithContext(ctx)
+	requestlog.Printf(ctx, "transcription start endpoint=/v1/audio/transcriptions")
 	result, stream, err := s.processRequest(w, r)
+	defer func() {
+		outcome := requestlog.Outcome(err)
+		logErr := err
+		if errors.Is(err, errResponseWritten) {
+			outcome = "response_written"
+			logErr = nil
+		}
+		requestlog.Printf(ctx, "transcription complete duration=%s outcome=%s error=%q context_error=%q", time.Since(started), outcome, requestlog.Error(ctx, logErr), requestlog.Error(ctx, ctx.Err()))
+	}()
 	if errors.Is(err, errResponseWritten) {
 		return
 	}
@@ -174,7 +192,11 @@ func (s *Server) processRequest(w http.ResponseWriter, r *http.Request) (transcr
 	enableITN := boolForm(r.FormValue("enable_itn"), s.cfg.EnableITN)
 	stream := boolForm(r.FormValue("stream"), false)
 
-	requestID := dashscope.RequestID()
+	requestID := requestlog.RequestID(r.Context())
+	if requestID == "" {
+		requestID = dashscope.RequestID()
+		r = r.WithContext(requestlog.WithRequestID(r.Context(), requestID))
+	}
 	tempDir := filepath.Join(os.TempDir(), tempRootName, requestID)
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
 		return transcriptionResult{}, stream, err
@@ -195,7 +217,7 @@ func (s *Server) processRequest(w http.ResponseWriter, r *http.Request) (transcr
 	}
 	route, _ := models.Match(modelName)
 	if route.Mode == models.Realtime {
-		log.Printf("request=%s endpoint=/v1/audio/transcriptions file=%s model=%s mode=realtime sample_rate=%d", requestID, sanitizeLogValue(header.Filename), sanitizeLogValue(modelName), sampleRate)
+		requestlog.Printf(r.Context(), "endpoint=/v1/audio/transcriptions file=%s model=%s mode=realtime sample_rate=%d", sanitizeLogValue(header.Filename), sanitizeLogValue(modelName), sampleRate)
 		err := s.transcribeRealtimeFile(w, r, inputPath, modelName, language, prompt, sampleRate, stream)
 		if err != nil {
 			return transcriptionResult{}, stream, err
@@ -206,8 +228,10 @@ func (s *Server) processRequest(w http.ResponseWriter, r *http.Request) (transcr
 		return transcriptionResult{}, stream, err
 	}
 
-	log.Printf("request=%s endpoint=/v1/audio/transcriptions file=%s model=%s language=%s enable_lid=%v enable_itn=%v", requestID, sanitizeLogValue(header.Filename), modelName, language, enableLID, enableITN)
+	requestlog.Printf(r.Context(), "endpoint=/v1/audio/transcriptions file=%s model=%s language=%s enable_lid=%v enable_itn=%v", sanitizeLogValue(header.Filename), sanitizeLogValue(modelName), language, enableLID, enableITN)
+	preprocessStarted := time.Now()
 	segments, err := s.preprocess(r.Context(), inputPath, tempDir, sampleRate, s.skipTrimForRequest(stream))
+	requestlog.Printf(r.Context(), "preprocess complete duration=%s segments=%d outcome=%s error=%q", time.Since(preprocessStarted), len(segments), requestlog.Outcome(err), requestlog.Error(r.Context(), err))
 	if err != nil {
 		return transcriptionResult{}, stream, err
 	}
@@ -259,22 +283,22 @@ func (s *Server) preprocess(ctx context.Context, inputPath, tempDir string, samp
 		if err != nil {
 			return nil, err
 		}
-		log.Printf("segments skip_trim=true input_duration=%s asr_segments=%d", splitInfo.InputDuration, splitInfo.SegmentCount)
+		requestlog.Printf(ctx, "segments skip_trim=true input_duration=%s asr_segments=%d", splitInfo.InputDuration, splitInfo.SegmentCount)
 		return segments, nil
 	}
 	mergedWAV := filepath.Join(tempDir, "converted_sliced_merged.wav")
 	merged, trimInfo, err := processor.RemoveSilenceByFixedSlicesAndMerge(ctx, wavPath, mergedWAV)
 	if err != nil {
-		log.Printf("fixed trim failed, fallback to converted wav: %v", err)
+		requestlog.Printf(ctx, "fixed trim failed, fallback to converted wav error=%q", requestlog.Error(ctx, err))
 		merged = wavPath
 	} else {
-		log.Printf("fixed trim input_duration=%s fixed_slice_length=%s slices=%d trimmed_slices=%d", convertInfo.InputDuration, s.cfg.FixedSliceLength, trimInfo.FixedSliceSucceeded, countTrimmedSliceFiles(cfg.FixedTrim.TempDir))
+		requestlog.Printf(ctx, "fixed trim input_duration=%s fixed_slice_length=%s slices=%d trimmed_slices=%d", convertInfo.InputDuration, s.cfg.FixedSliceLength, trimInfo.FixedSliceSucceeded, countTrimmedSliceFiles(cfg.FixedTrim.TempDir))
 	}
 	segments, splitInfo, err := processor.SplitWAVBySilenceGroups(ctx, merged)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("segments merged_duration=%s asr_segments=%d", splitInfo.InputDuration, splitInfo.SegmentCount)
+	requestlog.Printf(ctx, "segments merged_duration=%s asr_segments=%d", splitInfo.InputDuration, splitInfo.SegmentCount)
 	return segments, nil
 }
 
@@ -312,13 +336,16 @@ func (s *Server) recognizeSegments(ctx context.Context, segments []smartaudio.Se
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			release, err := s.acquireAPISlot(ctx)
+			segmentCtx := requestlog.WithSegment(ctx, segment.Index)
+			queued := time.Now()
+			release, err := s.acquireAPISlot(segmentCtx)
+			requestlog.Printf(segmentCtx, "asr slot queue_duration=%s outcome=%s error=%q", time.Since(queued), requestlog.Outcome(err), requestlog.Error(segmentCtx, err))
 			if err != nil {
 				results[i] = result{index: segment.Index, err: err}
 				return
 			}
 			defer release()
-			text, err := s.client.TranscribeFile(ctx, segment.File, model, options, prompt)
+			text, err := s.client.TranscribeFile(segmentCtx, segment.File, model, options, prompt)
 			results[i] = result{index: segment.Index, text: text, err: err}
 		}()
 	}
@@ -327,7 +354,7 @@ func (s *Server) recognizeSegments(ctx context.Context, segments []smartaudio.Se
 	var builder strings.Builder
 	for _, res := range results {
 		if res.err != nil {
-			return "", fmt.Errorf("分片识别失败: index=%d, msg=%v", res.index, res.err)
+			return "", fmt.Errorf("分片识别失败: index=%d, msg=%w", res.index, res.err)
 		}
 		builder.WriteString(res.text)
 	}

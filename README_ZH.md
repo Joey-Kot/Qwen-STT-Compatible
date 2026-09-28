@@ -365,7 +365,7 @@ HTTP 和两个 WebSocket 地址独立配置，不会相互推导。使用百炼�
 
 - Paraformer 实时协议仅支持北京地域，复用 `DASHSCOPE_WS_URL`；默认地址 `wss://dashscope.aliyuncs.com/api-ws/v1/inference` 仍可使用。
 - 密钥、业务空间与地域需匹配。`DASHSCOPE_WORKSPACE` 用于发送实时上游的 `X-DashScope-WorkSpace` 请求头。
-- 非实时链路向 DashScope、OSS 和 WebDAV 发起的请求优先协商 HTTP/2，但不复用 keep-alive 连接：每个请求新建 TCP/TLS 连接，完成后关闭。实时链路在一个上游任务期间保持 WebSocket 连接。
+- 非实时链路向 DashScope、OSS 和 WebDAV 发起的请求优先协商 HTTP/2，并复用连接，减少重复 DNS 查询和 TCP/TLS 握手。日志中的 `reused=true` 表示本次请求复用了已有连接。实时链路在一个上游任务期间保持 WebSocket 连接。
 
 ### 上传与存储
 
@@ -415,7 +415,7 @@ ASR 分片统一使用 `ogg` 容器和 `libopus` 编码，不按原始文件扩�
 
 实时文件接口需要系统 `PATH` 中提供 `ffmpeg`。持续 PCM 的 WebSocket 入口不依赖 FFmpeg 可执行文件；8k 和 16k 重采样在 Go 中完成。
 
-预处理库需要 `libav` build tag，并且需要 FFmpeg/libav 静态依赖。项目脚本会委托当前 `go.mod` 中 `github.com/Joey-Kot/ASR-Audio-Preprocess` 依赖包提供的构建脚本：
+预处理库需要 `libav` build tag，并且需要 FFmpeg/libav 静态依赖。项目脚本会先下载源码，再委托当前 `go.mod` 中 `github.com/Joey-Kot/ASR-Audio-Preprocess` 依赖包提供的构建脚本校验签名并编译：
 
 ```bash
 ./scripts/bootstrap-static-audio-deps.sh
@@ -425,6 +425,8 @@ PKG_CONFIG_PATH="$PWD/third_party/ffmpeg-audio/lib/pkgconfig" \
 PKG_CONFIG="pkg-config --static" \
 go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-static'" -o qwen-stt-compatible ./cmd/server
 ```
+
+下载先写入 `.part` 文件，中断后自动续传，默认最多尝试 6 次。压缩包通过完整性检查后才作为缓存使用，旧脚本遗留的残缺压缩包也会自动恢复；服务器不支持续传时，自动重新下载。FFmpeg 仍须通过签名校验；设置了 `FFMPEG_SHA256` 或 `OPUS_SHA256` 时，缓存也须通过对应的哈希校验。可通过 `DOWNLOAD_MAX_ATTEMPTS`、`DOWNLOAD_RETRY_DELAY`（秒，默认 `2`）、`DOWNLOAD_CONNECT_TIMEOUT`（秒，默认 `20`）和 `DOWNLOAD_MAX_TIME`（每次尝试的秒数，默认 `1800`）调整下载行为。连续 60 秒低于 1 KiB/s 的传输会中断并重试。网络故障后重新运行同一条构建命令即可，无需手动清理缓存。
 
 完整启动参数示例：
 
@@ -547,24 +549,41 @@ Release packages include the executable, `README.md`, `LICENSE`, `NOTICE`,
 request=<request_id> endpoint=/v1/audio/transcriptions file=<filename> model=<model> language=<language> enable_lid=<bool> enable_itn=<bool>
 ```
 
+日志时间戳精确到微秒。非实时链路使用 `request`、`segment`、`attempt` 关联同一请求、分片和重试；每个 HTTP 请求另有 `http_id`，避免并发时混淆。
+
+| 日志事件 | 排查信息 |
+|---|---|
+| `preprocess complete` / `asr slot` | 本地预处理耗时、等待 ASR 并发名额的时间 |
+| `upstream dns` / `connect` / `tls` | DNS 结果、各次 TCP 连接及 TLS 握手的耗时和错误；连接复用时不会重新发生这些阶段 |
+| `upstream connection` / `sent` | 远端地址、是否复用、获取连接耗时 `conn_wait`、写入请求耗时 `write_duration` |
+| `upstream response` | HTTP 状态、协议、收到响应头的耗时 `duration`、从请求开始到首字节的 `ttfb`、请求写完到首字节的 `response_wait` |
+| `upstream body` | 实际读取字节数、收到响应头后读取响应体的 `body_duration`、含连接和响应体的 `total_duration`；`outcome=eof` 表示读完，`closed` 表示提前关闭，`error` 表示读取失败 |
+| `async task submit` / `poll` / `complete` | 上游请求 ID、任务 ID、实际 `task_status`、轮询次数、累计耗时、下次轮询间隔、任务错误码和错误信息 |
+| `async subtask` | 子任务状态、错误码、错误信息，以及去除认证信息和查询参数的音频 URL、结果 URL |
+| `asr retry` / `asr complete` / `transcription complete` | 重试原因与间隔、最终成功/失败/取消/超时，以及分片识别和整次请求耗时 |
+
+上游返回 `submit_time`、`scheduled_time`（或 `schedule_time`）、`end_time` 时，任务日志同时记录这些字段，并计算 `queue_duration`（提交到调度）和 `execution_duration`（调度到结束）。缺失或无法解析的耗时显示为 `-`；执行耗时可能包含取文件等处理，不能直接视为模型推理耗时。HTTP `200` 只代表查询请求成功，需结合 `task_status` 和子任务状态判断转写结果。
+
+日志不输出音频、提示词或转写正文；错误信息会限制长度，过滤配置中的密钥、WebDAV 密码及 URL 中的认证信息和查询参数。客户端日志无法直接观测百炼下载音频的连接，文件拉取问题仍需结合上游错误码和 WebDAV 访问日志判断。
+
 实时文件请求改为记录 `mode=realtime` 和上游 `sample_rate`，不输出分片、裁剪日志；WebSocket 会话记录 `session=<session_id>` 的连接和关闭事件。实时 PCM 数据通过管道或内存传输，不生成 Ogg 分片，也不上传 OSS / WebDAV。
 
 非实时非流式请求在 `SKIP_TRIM=false` 时，固定切片静音裁剪成功会输出：
 
 ```text
-fixed trim input_duration=<音频文件原始长度> fixed_slice_length=<固定切片长度> slices=<成功切片数量> trimmed_slices=<检测到静音并进行了裁剪的切片数量>
+request=<request_id> fixed trim input_duration=<音频文件原始长度> fixed_slice_length=<固定切片长度> slices=<成功切片数量> trimmed_slices=<检测到静音并进行了裁剪的切片数量>
 ```
 
 默认模式生成 ASR 分片后会输出：
 
 ```text
-segments merged_duration=<切片合并后音频长度> asr_segments=<并发 ASR 分片数量>
+request=<request_id> segments merged_duration=<切片合并后音频长度> asr_segments=<并发 ASR 分片数量>
 ```
 
 非实时请求配置 `SKIP_TRIM=true` 或请求 `stream=true` 时，不会输出固定裁剪日志，直接分片后会输出：
 
 ```text
-segments skip_trim=true input_duration=<统一转码后音频长度> asr_segments=<并发 ASR 分片数量>
+request=<request_id> segments skip_trim=true input_duration=<统一转码后音频长度> asr_segments=<并发 ASR 分片数量>
 ```
 
 ## 音频分片存储与上传

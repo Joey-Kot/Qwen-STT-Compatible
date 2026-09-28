@@ -12,9 +12,15 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -24,6 +30,29 @@ import (
 	"qwen-stt-compatible/internal/config"
 	"qwen-stt-compatible/internal/dashscope"
 )
+
+func TestTranscriptionLogsFinalErrorWithRequestID(t *testing.T) {
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	server := New(config.Config{APITokens: []string{"test-token"}}, nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", strings.NewReader("invalid form"))
+	req.Header.Set("Authorization", "Bearer test-token")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d", w.Code)
+	}
+	output := logs.String()
+	id := regexp.MustCompile(`request=([a-f0-9]+) transcription start`).FindStringSubmatch(output)
+	if len(id) != 2 || !strings.Contains(output, "request="+id[1]+" transcription complete") || !strings.Contains(output, "outcome=error") || !strings.Contains(output, "multipart/form-data 解析失败") {
+		t.Fatalf("missing correlated final error: %s", output)
+	}
+	if strings.Contains(output, "test-token") {
+		t.Fatalf("token leaked: %s", output)
+	}
+}
 
 func TestSkipTrimForRequest(t *testing.T) {
 	for _, configured := range []bool{false, true} {

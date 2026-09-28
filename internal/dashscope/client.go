@@ -15,18 +15,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"mime"
 	"mime/multipart"
 	"net/http"
-	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -35,6 +32,7 @@ import (
 
 	"qwen-stt-compatible/internal/config"
 	"qwen-stt-compatible/internal/models"
+	"qwen-stt-compatible/internal/requestlog"
 )
 
 const (
@@ -114,13 +112,15 @@ func newHTTPClient(timeout time.Duration) *http.Client {
 	protocols.SetHTTP1(true)
 	protocols.SetHTTP2(true)
 	transport.Protocols = protocols
-	// Keep HTTP/2 available for DashScope while forcing every request to create
-	// and close its own connection, avoiding shared HTTP/2 sessions.
-	transport.DisableKeepAlives = true
 	return &http.Client{Transport: transport, Timeout: timeout}
 }
 
-func (c *Client) TranscribeFile(ctx context.Context, path, model string, options ASROptions, prompt string) (string, error) {
+func (c *Client) TranscribeFile(ctx context.Context, path, model string, options ASROptions, prompt string) (text string, err error) {
+	ctx = c.logContext(ctx)
+	started := time.Now()
+	defer func() {
+		requestlog.Printf(ctx, "asr complete model=%q duration=%s outcome=%s error=%q", model, time.Since(started), requestlog.Outcome(err), requestlog.Error(ctx, err))
+	}()
 	if route, err := models.Match(model); err == nil && route.Mode == models.Realtime {
 		return "", errors.New("实时模型必须使用 WebSocket 识别链路")
 	}
@@ -137,7 +137,11 @@ func (c *Client) TranscribeFile(ctx context.Context, path, model string, options
 		attempts = 1
 	}
 	for attempt := 1; attempt <= attempts; attempt++ {
-		text, err := c.transcribeOnce(ctx, path, model, options, prompt)
+		attemptCtx := requestlog.WithAttempt(ctx, attempt)
+		attemptStarted := time.Now()
+		requestlog.Printf(attemptCtx, "asr attempt model=%q max_attempts=%d", model, attempts)
+		text, err := c.transcribeOnce(attemptCtx, path, model, options, prompt)
+		requestlog.Printf(attemptCtx, "asr attempt complete duration=%s outcome=%s error=%q", time.Since(attemptStarted), requestlog.Outcome(err), requestlog.Error(attemptCtx, err))
 		if err == nil {
 			return text, nil
 		}
@@ -150,7 +154,9 @@ func (c *Client) TranscribeFile(ctx context.Context, path, model string, options
 			if delay <= 0 {
 				delay = 500 * time.Millisecond
 			}
-			timer := time.NewTimer(minDuration(delay, c.retry.MaxDelay))
+			retryDelay := minDuration(delay, c.retry.MaxDelay)
+			requestlog.Printf(attemptCtx, "asr retry next_attempt=%d delay=%s error=%q", attempt+1, retryDelay, requestlog.Error(attemptCtx, err))
+			timer := time.NewTimer(retryDelay)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
@@ -292,7 +298,7 @@ func (c *Client) transcribeAsyncTask(ctx context.Context, path, model string, op
 	if err != nil {
 		return "", err
 	}
-	defer c.cleanupUploadedFile(uploaded)
+	defer c.cleanupUploadedFile(ctx, uploaded)
 	parameters := map[string]any{}
 	if options.Language != "" && supportsLanguageHints(model) {
 		parameters["language_hints"] = []string{options.Language}
@@ -319,6 +325,7 @@ func (c *Client) transcribeAsyncTask(ctx context.Context, path, model string, op
 	if err := c.doJSON(ctx, http.MethodPost, c.endpoint(transcribePath), body, &launched, asyncTaskHeaders(uploaded.resourceURL)); err != nil {
 		return "", err
 	}
+	logAsyncTask(ctx, "submit", launched.taskID(), launched, 0, 0, 0)
 	if launched.Code != "" {
 		return "", fmt.Errorf("%s: %s", launched.Code, launched.Message)
 	}
@@ -351,14 +358,27 @@ func asyncTaskHeaders(resourceURL string) map[string]string {
 	return headers
 }
 
-func (c *Client) waitTask(ctx context.Context, taskID string) (asyncTaskResponse, error) {
+func (c *Client) waitTask(ctx context.Context, taskID string) (result asyncTaskResponse, err error) {
+	started := time.Now()
+	polls := 0
+	lastStatus := ""
+	defer func() {
+		requestlog.Printf(ctx, "async task complete task_id=%q task_status=%q polls=%d elapsed=%s outcome=%s error=%q", taskID, lastStatus, polls, time.Since(started), requestlog.Outcome(err), requestlog.Error(ctx, err))
+	}()
 	wait := time.Second
 	step := 0
 	for {
+		polls++
 		var response asyncTaskResponse
 		if err := c.doJSON(ctx, http.MethodGet, c.endpoint("tasks/"+url.PathEscape(taskID)), nil, &response, nil); err != nil {
 			return asyncTaskResponse{}, err
 		}
+		lastStatus = response.Output.TaskStatus
+		nextPoll := wait
+		if response.Code != "" || lastStatus == "SUCCEEDED" || lastStatus == "FAILED" || lastStatus == "CANCELED" || lastStatus == "UNKNOWN" {
+			nextPoll = 0
+		}
+		logAsyncTask(ctx, "poll", taskID, response, polls, time.Since(started), nextPoll)
 		if response.Code != "" {
 			return asyncTaskResponse{}, fmt.Errorf("%s: %s", response.Code, response.Message)
 		}
@@ -370,7 +390,7 @@ func (c *Client) waitTask(ctx context.Context, taskID string) (asyncTaskResponse
 			if message == "" {
 				message = response.Message
 			}
-			return asyncTaskResponse{}, fmt.Errorf("DashScope 任务失败: task_id=%s status=%s message=%s", taskID, response.Output.TaskStatus, message)
+			return asyncTaskResponse{}, fmt.Errorf("DashScope 任务失败: task_id=%s status=%s code=%s message=%s", taskID, response.Output.TaskStatus, response.Output.Code, message)
 		}
 
 		timer := time.NewTimer(wait)
@@ -397,7 +417,7 @@ func (c *Client) collectAsyncTaskText(ctx context.Context, response asyncTaskRes
 	var builder strings.Builder
 	for _, item := range response.Output.Results {
 		if item.SubtaskStatus != "" && item.SubtaskStatus != "SUCCEEDED" {
-			return "", fmt.Errorf("DashScope 子任务失败: status=%s message=%s", item.SubtaskStatus, item.Message)
+			return "", fmt.Errorf("DashScope 子任务失败: status=%s code=%s message=%s", item.SubtaskStatus, item.Code, item.Message)
 		}
 		if item.TranscriptionURL == "" {
 			continue
@@ -439,16 +459,23 @@ func (r asyncTaskResponse) taskID() string {
 }
 
 type asyncTaskOutput struct {
-	TaskID     string         `json:"task_id"`
-	TaskStatus string         `json:"task_status"`
-	Message    string         `json:"message"`
-	Results    []asyncResult  `json:"results"`
-	Raw        map[string]any `json:"-"`
+	TaskID        string         `json:"task_id"`
+	TaskStatus    string         `json:"task_status"`
+	Code          string         `json:"code"`
+	Message       string         `json:"message"`
+	SubmitTime    string         `json:"submit_time"`
+	ScheduledTime string         `json:"scheduled_time"`
+	ScheduleTime  string         `json:"schedule_time"`
+	EndTime       string         `json:"end_time"`
+	TaskMetrics   map[string]int `json:"task_metrics"`
+	Results       []asyncResult  `json:"results"`
+	Raw           map[string]any `json:"-"`
 }
 
 type asyncResult struct {
 	FileURL          string `json:"file_url"`
 	SubtaskStatus    string `json:"subtask_status"`
+	Code             string `json:"code"`
 	TranscriptionURL string `json:"transcription_url"`
 	Message          string `json:"message"`
 }
@@ -523,10 +550,9 @@ func (c *Client) upload(ctx context.Context, model, path string) (uploadedFile, 
 	if err != nil {
 		return uploadedFile{}, err
 	}
-	defer resp.Body.Close()
+	defer closeResponse(resp)
 	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return uploadedFile{}, fmt.Errorf("上传 OSS 失败: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return uploadedFile{}, responseError(resp, fmt.Sprintf("上传 OSS 失败: status=%d", resp.StatusCode), 4096)
 	}
 	return uploadedFile{resourceURL: "oss://" + key}, nil
 }
@@ -552,36 +578,35 @@ func (c *Client) uploadWebDAV(ctx context.Context, path string) (uploadedFile, e
 	if err != nil {
 		return uploadedFile{}, err
 	}
-	defer resp.Body.Close()
+	defer closeResponse(resp)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return uploadedFile{}, fmt.Errorf("上传 WebDAV 失败: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return uploadedFile{}, responseError(resp, fmt.Sprintf("上传 WebDAV 失败: status=%d", resp.StatusCode), 4096)
 	}
 	return uploadedFile{resourceURL: resourceURL, webDAVURL: resourceURL}, nil
 }
 
-func (c *Client) cleanupUploadedFile(uploaded uploadedFile) {
+func (c *Client) cleanupUploadedFile(ctx context.Context, uploaded uploadedFile) {
 	if uploaded.webDAVURL == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, uploaded.webDAVURL, nil)
 	if err != nil {
-		log.Printf("delete WebDAV temporary audio: %v", err)
+		requestlog.Printf(ctx, "delete WebDAV temporary audio error=%q", requestlog.Error(ctx, err))
 		return
 	}
 	req.SetBasicAuth(c.webdav.username, c.webdav.password)
 	req.Header.Set("User-Agent", "qwen-stt-compatible")
 	resp, err := c.do(req)
 	if err != nil {
-		log.Printf("delete WebDAV temporary audio: %v", err)
+		requestlog.Printf(ctx, "delete WebDAV temporary audio error=%q", requestlog.Error(ctx, err))
 		return
 	}
-	defer resp.Body.Close()
+	defer closeResponse(resp)
 	if (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) && resp.StatusCode != http.StatusNotFound {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		log.Printf("delete WebDAV temporary audio: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(data)))
+		err := responseError(resp, fmt.Sprintf("delete WebDAV temporary audio: status=%d", resp.StatusCode), 4096)
+		requestlog.Printf(ctx, "delete WebDAV temporary audio error=%q", requestlog.Error(ctx, err))
 	}
 }
 
@@ -637,55 +662,13 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, payload an
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponse(resp)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		return fmt.Errorf("DashScope HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return responseError(resp, fmt.Sprintf("DashScope HTTP %d", resp.StatusCode), 8192)
 	}
 	decoder := json.NewDecoder(resp.Body)
 	decoder.UseNumber()
 	return decoder.Decode(out)
-}
-
-// do performs and logs every outbound request. It deliberately excludes
-// request headers, bodies, credentials, and URL query parameters from logs.
-func (c *Client) do(req *http.Request) (*http.Response, error) {
-	started := time.Now()
-	target := sanitizeUpstreamURL(req.URL)
-	log.Printf("upstream request method=%s url=%s", req.Method, target)
-
-	trace := &httptrace.ClientTrace{
-		DNSDone: func(info httptrace.DNSDoneInfo) {
-			if info.Err != nil {
-				log.Printf("upstream dns method=%s url=%s error=%v", req.Method, target, info.Err)
-			}
-		},
-		ConnectDone: func(network, addr string, err error) {
-			if err != nil {
-				log.Printf("upstream connect method=%s url=%s network=%s address=%s error=%v", req.Method, target, network, addr, err)
-			}
-		},
-		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
-			if err != nil {
-				log.Printf("upstream tls method=%s url=%s error=%v", req.Method, target, err)
-			}
-		},
-		GotConn: func(info httptrace.GotConnInfo) {
-			remoteAddr := ""
-			if info.Conn != nil && info.Conn.RemoteAddr() != nil {
-				remoteAddr = info.Conn.RemoteAddr().String()
-			}
-			log.Printf("upstream connection method=%s url=%s remote=%s reused=%t idle=%t", req.Method, target, remoteAddr, info.Reused, info.WasIdle)
-		},
-	}
-	resp, err := c.http.Do(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
-	duration := time.Since(started)
-	if err != nil {
-		log.Printf("upstream error method=%s url=%s duration=%s error=%v", req.Method, target, duration, err)
-		return resp, err
-	}
-	log.Printf("upstream response method=%s url=%s status=%d protocol=%s duration=%s", req.Method, target, resp.StatusCode, resp.Proto, duration)
-	return resp, nil
 }
 
 func sanitizeUpstreamURL(u *url.URL) string {
@@ -711,10 +694,9 @@ func (c *Client) getJSON(ctx context.Context, endpoint string, out any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeResponse(resp)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		return fmt.Errorf("下载 DashScope 转写结果失败: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return responseError(resp, fmt.Sprintf("下载 DashScope 转写结果失败: HTTP %d", resp.StatusCode), 8192)
 	}
 	decoder := json.NewDecoder(resp.Body)
 	decoder.UseNumber()

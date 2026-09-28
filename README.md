@@ -365,7 +365,7 @@ The HTTP endpoint and the two WebSocket endpoints are configured independently; 
 
 - Paraformer realtime is available only in Beijing and reuses `DASHSCOPE_WS_URL`. The default `wss://dashscope.aliyuncs.com/api-ws/v1/inference` remains usable.
 - The key, workspace, and region must match. `DASHSCOPE_WORKSPACE` supplies the `X-DashScope-WorkSpace` header for realtime upstream requests.
-- Non-realtime requests to DashScope, OSS, and WebDAV prefer HTTP/2 but do not reuse keep-alive connections: each request opens a new TCP/TLS connection and closes it on completion. Realtime connections remain open for the duration of an upstream task.
+- Non-realtime requests to DashScope, OSS, and WebDAV prefer HTTP/2 and reuse connections to reduce repeated DNS lookups and TCP/TLS handshakes. A connection log with `reused=true` confirms reuse for that request. Realtime connections remain open for the duration of an upstream task.
 
 ### Uploads and Storage
 
@@ -415,7 +415,7 @@ Range validation for non-realtime retry and preprocessing concurrency settings o
 
 The realtime file endpoint requires `ffmpeg` on the system `PATH`. The continuous-PCM WebSocket endpoint does not require the FFmpeg executable; 8k and 16k resampling is implemented in Go.
 
-The preprocessing library requires the `libav` build tag and static FFmpeg/libav dependencies. The project script delegates to the build script provided by the `github.com/Joey-Kot/ASR-Audio-Preprocess` version in `go.mod`:
+The preprocessing library requires the `libav` build tag and static FFmpeg/libav dependencies. The project script downloads the sources, then delegates signature verification and compilation to the build script provided by the `github.com/Joey-Kot/ASR-Audio-Preprocess` version in `go.mod`:
 
 ```bash
 ./scripts/bootstrap-static-audio-deps.sh
@@ -425,6 +425,8 @@ PKG_CONFIG_PATH="$PWD/third_party/ffmpeg-audio/lib/pkgconfig" \
 PKG_CONFIG="pkg-config --static" \
 go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-static'" -o qwen-stt-compatible ./cmd/server
 ```
+
+Downloads use `.part` files and resume interrupted transfers, with up to 6 attempts by default. Archives are checked for compression integrity before becoming cached downloads; incomplete archives left by older scripts are recovered automatically. If a server does not support resuming, the script starts a fresh download. FFmpeg signature verification remains required. Optional `FFMPEG_SHA256` and `OPUS_SHA256` values are also checked before accepting cached files. `DOWNLOAD_MAX_ATTEMPTS`, `DOWNLOAD_RETRY_DELAY` (seconds, default `2`), `DOWNLOAD_CONNECT_TIMEOUT` (seconds, default `20`), and `DOWNLOAD_MAX_TIME` (seconds per attempt, default `1800`) can be set to tune downloads. Transfers slower than 1 KiB/s for 60 seconds are interrupted and retried. Rerun the same bootstrap command after a network failure; no manual cache cleanup is needed.
 
 Complete startup example:
 
@@ -547,24 +549,41 @@ Each transcription request logs basic request information, without API tokens, D
 request=<request_id> endpoint=/v1/audio/transcriptions file=<filename> model=<model> language=<language> enable_lid=<bool> enable_itn=<bool>
 ```
 
+Log timestamps include microseconds. Non-realtime logs carry `request`, `segment`, and `attempt` to correlate a request, segment, and retry. Each HTTP operation also has an `http_id` so concurrent requests can be distinguished.
+
+| Event | Diagnostic information |
+|---|---|
+| `preprocess complete` / `asr slot` | Local preprocessing duration and time waiting for an ASR concurrency slot |
+| `upstream dns` / `connect` / `tls` | Resolved addresses, individual TCP connection and TLS handshake durations and errors; these phases do not repeat when a connection is reused |
+| `upstream connection` / `sent` | Remote address, connection reuse, acquisition time `conn_wait`, and request write time `write_duration` |
+| `upstream response` | HTTP status, protocol, elapsed time to response headers (`duration`), time from request start to first byte (`ttfb`), and time from request write completion to first byte (`response_wait`) |
+| `upstream body` | Bytes read, time reading the body after headers (`body_duration`), and elapsed time including connection setup and body reading (`total_duration`); `outcome=eof` means fully read, `closed` means closed early, and `error` means a read failure |
+| `async task submit` / `poll` / `complete` | Upstream request ID, task ID, actual `task_status`, poll count, elapsed time, next poll delay, and task error codes/messages |
+| `async subtask` | Subtask status, error code/message, and audio/result URLs with credentials and query parameters removed |
+| `asr retry` / `asr complete` / `transcription complete` | Retry reason/delay, final success/error/cancellation/timeout, and segment/request duration |
+
+When the upstream returns `submit_time`, `scheduled_time` (or `schedule_time`), and `end_time`, task logs include them and derive `queue_duration` (submission to scheduling) and `execution_duration` (scheduling to completion). Missing or invalid durations appear as `-`. Execution time may include file fetching and other processing; it is not a measurement of model inference alone. HTTP `200` confirms a successful query, so check the task and subtask statuses for the transcription outcome.
+
+Logs omit audio, prompts, and transcript content. Error messages are bounded and redact configured keys, the WebDAV password, and URL credentials/query parameters. Client logs cannot observe Model Studio's connection when downloading audio; diagnose file retrieval using upstream error codes and WebDAV access logs together.
+
 Realtime file requests instead log `mode=realtime` and the upstream `sample_rate`, without segment or trimming logs. WebSocket sessions log connection and close events with `session=<session_id>`. Realtime PCM is passed through pipes or memory, without creating Ogg segments or uploading to OSS / WebDAV.
 
 For non-realtime, non-streaming requests with `SKIP_TRIM=false`, successful fixed-slice silence trimming logs:
 
 ```text
-fixed trim input_duration=<original-audio-duration> fixed_slice_length=<fixed-slice-length> slices=<successful-slice-count> trimmed_slices=<slices-with-silence-detected-and-trimmed>
+request=<request_id> fixed trim input_duration=<original-audio-duration> fixed_slice_length=<fixed-slice-length> slices=<successful-slice-count> trimmed_slices=<slices-with-silence-detected-and-trimmed>
 ```
 
 After ASR segments are generated in the default mode:
 
 ```text
-segments merged_duration=<merged-audio-duration> asr_segments=<concurrent-asr-segment-count>
+request=<request_id> segments merged_duration=<merged-audio-duration> asr_segments=<concurrent-asr-segment-count>
 ```
 
 For non-realtime requests with `SKIP_TRIM=true` or `stream=true`, fixed-trimming logs are omitted. Direct segmentation logs:
 
 ```text
-segments skip_trim=true input_duration=<transcoded-audio-duration> asr_segments=<concurrent-asr-segment-count>
+request=<request_id> segments skip_trim=true input_duration=<transcoded-audio-duration> asr_segments=<concurrent-asr-segment-count>
 ```
 
 ## Audio Segment Storage and Uploads
