@@ -2,26 +2,16 @@
 set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-MODULE="github.com/Joey-Kot/ASR-Audio-Preprocess"
-
-cd "$ROOT_DIR"
-go mod download "$MODULE"
-MODULE_DIR="$(go list -m -f '{{.Dir}}' "$MODULE" | tr -d '\r')"
-if [ -z "$MODULE_DIR" ]; then
-  echo "failed to resolve module directory for $MODULE" >&2
-  exit 1
-fi
-if [ -n "${MSYSTEM:-}" ] && command -v cygpath >/dev/null 2>&1; then
-  MODULE_DIR="$(cygpath -u "$MODULE_DIR")"
-fi
 
 # Prepare complete downloads before delegating compilation and GPG verification.
 # Keep source defaults aligned with the pinned ASR-Audio-Preprocess module, and
 # export them so the downloader and upstream build always use the same files.
 export THIRD_PARTY_DIR="${THIRD_PARTY_DIR:-$ROOT_DIR/third_party}"
 export SRC_DIR="${SRC_DIR:-$THIRD_PARTY_DIR/src}"
-export FFMPEG_VERSION="${FFMPEG_VERSION:-8.1.2}"
+export FFMPEG_VERSION="${FFMPEG_VERSION:-8.1.3}"
 export OPUS_VERSION="${OPUS_VERSION:-1.5.2}"
+export FFMPEG_SHA256="${FFMPEG_SHA256:-bd458826a039b48a9606e794554c75eb4c4984b84173f7afa3128eae89336f2b}"
+export OPUS_SHA256="${OPUS_SHA256:-65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1}"
 export FFMPEG_ARCHIVE_EXT="${FFMPEG_ARCHIVE_EXT:-tar.gz}"
 export FFMPEG_URL="${FFMPEG_URL:-https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.$FFMPEG_ARCHIVE_EXT}"
 export FFMPEG_SIG_URL="${FFMPEG_SIG_URL:-$FFMPEG_URL.asc}"
@@ -33,4 +23,4 @@ sh "$ROOT_DIR/scripts/download-file.sh" "$FFMPEG_URL" "$SRC_DIR/ffmpeg-$FFMPEG_V
 sh "$ROOT_DIR/scripts/download-file.sh" "$FFMPEG_SIG_URL" "$SRC_DIR/ffmpeg-$FFMPEG_VERSION.$FFMPEG_ARCHIVE_EXT.asc"
 sh "$ROOT_DIR/scripts/download-file.sh" "$FFMPEG_PGP_KEY_URL" "$SRC_DIR/ffmpeg-devel.asc"
 
-sh "$MODULE_DIR/scripts/bootstrap-static-audio-deps.sh"
+sh "$ROOT_DIR/scripts/run-audio-dependency-build.sh" bootstrap-static-audio-deps.sh

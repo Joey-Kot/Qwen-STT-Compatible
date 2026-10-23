@@ -413,9 +413,11 @@ Range validation for non-realtime retry and preprocessing concurrency settings o
 
 ## Building Locally
 
-The realtime file endpoint requires `ffmpeg` on the system `PATH`. The continuous-PCM WebSocket endpoint does not require the FFmpeg executable; 8k and 16k resampling is implemented in Go.
+Build with Go 1.27.3 or newer.
 
-The preprocessing library requires the `libav` build tag and static FFmpeg/libav dependencies. The project script downloads the sources, then delegates signature verification and compilation to the build script provided by the `github.com/Joey-Kot/ASR-Audio-Preprocess` version in `go.mod`:
+The realtime file endpoint requires `ffmpeg` on the system `PATH`. This executable is separate from the statically linked preprocessing library and needs its own security updates, including the MOV `pssh` fix for CVE-2026-107678. The continuous-PCM WebSocket endpoint does not require the FFmpeg executable; 8k and 16k resampling is implemented in Go.
+
+The preprocessing library requires the `libav` build tag and static FFmpeg/libav dependencies. The project script downloads FFmpeg 8.1.3 and Opus 1.5.2 with pinned SHA-256 checksums, then delegates signature verification, the CVE-2026-107678 backport, and compilation to the build script provided by the `github.com/Joey-Kot/ASR-Audio-Preprocess` version in `go.mod`:
 
 ```bash
 ./scripts/bootstrap-static-audio-deps.sh
@@ -426,7 +428,7 @@ PKG_CONFIG="pkg-config --static" \
 go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-static'" -o qwen-stt-compatible ./cmd/server
 ```
 
-Downloads use `.part` files and resume interrupted transfers, with up to 6 attempts by default. Archives are checked for compression integrity before becoming cached downloads; incomplete archives left by older scripts are recovered automatically. If a server does not support resuming, the script starts a fresh download. FFmpeg signature verification remains required. Optional `FFMPEG_SHA256` and `OPUS_SHA256` values are also checked before accepting cached files. `DOWNLOAD_MAX_ATTEMPTS`, `DOWNLOAD_RETRY_DELAY` (seconds, default `2`), `DOWNLOAD_CONNECT_TIMEOUT` (seconds, default `20`), and `DOWNLOAD_MAX_TIME` (seconds per attempt, default `1800`) can be set to tune downloads. Transfers slower than 1 KiB/s for 60 seconds are interrupted and retried. Rerun the same bootstrap command after a network failure; no manual cache cleanup is needed.
+Downloads use `.part` files and resume interrupted transfers, with up to 6 attempts by default. Archives are checked for compression integrity before becoming cached downloads; incomplete archives left by older scripts are recovered automatically. If a server does not support resuming, the script starts a fresh download. FFmpeg signature verification remains required. `FFMPEG_SHA256` and `OPUS_SHA256` default to pinned checksums and are checked before accepting cached files. `DOWNLOAD_MAX_ATTEMPTS`, `DOWNLOAD_RETRY_DELAY` (seconds, default `2`), `DOWNLOAD_CONNECT_TIMEOUT` (seconds, default `20`), and `DOWNLOAD_MAX_TIME` (seconds per attempt, default `1800`) can be set to tune downloads. Transfers slower than 1 KiB/s for 60 seconds are interrupted and retried. Rerun the same bootstrap command after a network failure; no manual cache cleanup is needed.
 
 Complete startup example:
 

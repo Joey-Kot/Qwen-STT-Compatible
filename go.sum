@@ -1,6 +1,6 @@
-github.com/Joey-Kot/ASR-Audio-Preprocess v0.0.0-20260709154624-207248af702d h1:6u8HTuE4N0p0XrKGuqklAAbxCVKuvAckbxrjE+wfol4=
-github.com/Joey-Kot/ASR-Audio-Preprocess v0.0.0-20260709154624-207248af702d/go.mod h1:iLe5T+qZpLjds8uqqDugBLqd2cD4cXo9Rlw3Uz95ZgA=
-github.com/Joey-Kot/ASR-Audio-Preprocess v0.0.0-20260901092746-72922741cf43 h1:VVj0JO4AHSkkTBwOj187Tf+sp+gIA9HPQmzV8ONXmbo=
-github.com/Joey-Kot/ASR-Audio-Preprocess v0.0.0-20260901092746-72922741cf43/go.mod h1:iLe5T+qZpLjds8uqqDugBLqd2cD4cXo9Rlw3Uz95ZgA=
-github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
-github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
+github.com/Joey-Kot/ASR-Audio-Preprocess v0.0.0-20261023044719-82196363aea0 h1:mlgDpIltm1XAFQn+OvD3JgigJggFaNzWaSYKgKN4KtM=
+github.com/Joey-Kot/ASR-Audio-Preprocess v0.0.0-20261023044719-82196363aea0/go.mod h1:ziSSATzWmT+tyOS5lzeh5SG3RSzJgMFmYZXkY9+xmrM=
+github.com/gorilla/websocket v1.5.4-0.20240701034025-d67f41855da4 h1:PYKzliEgITjLJoJqbV90S0YRaG8LNAsICH6fp6MApC0=
+github.com/gorilla/websocket v1.5.4-0.20240701034025-d67f41855da4/go.mod h1:r4w70xmWCQKmi1ONH4KIaBptdivuRPyosB9RmPlGEwA=
+golang.org/x/net v0.61.0 h1:RR+6j/BTBCrggOLugxa+66R8FvoN6MHlzDlZIbN9YFw=
+golang.org/x/net v0.61.0/go.mod h1:WgDCOTH8iwtB66T4/GfI94AHo/hhdb7Hah9NDseQfiI=

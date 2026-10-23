@@ -413,9 +413,11 @@ ASR 分片统一使用 `ogg` 容器和 `libopus` 编码，不按原始文件扩�
 
 ## 本地构建
 
-实时文件接口需要系统 `PATH` 中提供 `ffmpeg`。持续 PCM 的 WebSocket 入口不依赖 FFmpeg 可执行文件；8k 和 16k 重采样在 Go 中完成。
+使用 Go 1.27.3 或更新版本构建。
 
-预处理库需要 `libav` build tag，并且需要 FFmpeg/libav 静态依赖。项目脚本会先下载源码，再委托当前 `go.mod` 中 `github.com/Joey-Kot/ASR-Audio-Preprocess` 依赖包提供的构建脚本校验签名并编译：
+实时文件接口需要系统 `PATH` 中提供 `ffmpeg`。这个可执行文件与静态链接的预处理库相互独立，需要单独安装安全更新，包括 CVE-2026-107678 的 MOV `pssh` 修复。持续 PCM 的 WebSocket 入口不依赖 FFmpeg 可执行文件；8k 和 16k 重采样在 Go 中完成。
+
+预处理库需要 `libav` build tag，并且需要 FFmpeg/libav 静态依赖。项目脚本会先下载 FFmpeg 8.1.3 和 Opus 1.5.2，并校验固定的 SHA-256，再委托当前 `go.mod` 中 `github.com/Joey-Kot/ASR-Audio-Preprocess` 依赖包提供的构建脚本校验签名、应用 CVE-2026-107678 补丁并编译：
 
 ```bash
 ./scripts/bootstrap-static-audio-deps.sh
@@ -426,7 +428,7 @@ PKG_CONFIG="pkg-config --static" \
 go build -tags libav -trimpath -ldflags="-s -w -linkmode external -extldflags '-static'" -o qwen-stt-compatible ./cmd/server
 ```
 
-下载先写入 `.part` 文件，中断后自动续传，默认最多尝试 6 次。压缩包通过完整性检查后才作为缓存使用，旧脚本遗留的残缺压缩包也会自动恢复；服务器不支持续传时，自动重新下载。FFmpeg 仍须通过签名校验；设置了 `FFMPEG_SHA256` 或 `OPUS_SHA256` 时，缓存也须通过对应的哈希校验。可通过 `DOWNLOAD_MAX_ATTEMPTS`、`DOWNLOAD_RETRY_DELAY`（秒，默认 `2`）、`DOWNLOAD_CONNECT_TIMEOUT`（秒，默认 `20`）和 `DOWNLOAD_MAX_TIME`（每次尝试的秒数，默认 `1800`）调整下载行为。连续 60 秒低于 1 KiB/s 的传输会中断并重试。网络故障后重新运行同一条构建命令即可，无需手动清理缓存。
+下载先写入 `.part` 文件，中断后自动续传，默认最多尝试 6 次。压缩包通过完整性检查后才作为缓存使用，旧脚本遗留的残缺压缩包也会自动恢复；服务器不支持续传时，自动重新下载。FFmpeg 仍须通过签名校验；`FFMPEG_SHA256` 和 `OPUS_SHA256` 默认使用固定校验值，缓存也须通过对应的哈希校验。可通过 `DOWNLOAD_MAX_ATTEMPTS`、`DOWNLOAD_RETRY_DELAY`（秒，默认 `2`）、`DOWNLOAD_CONNECT_TIMEOUT`（秒，默认 `20`）和 `DOWNLOAD_MAX_TIME`（每次尝试的秒数，默认 `1800`）调整下载行为。连续 60 秒低于 1 KiB/s 的传输会中断并重试。网络故障后重新运行同一条构建命令即可，无需手动清理缓存。
 
 完整启动参数示例：
 
