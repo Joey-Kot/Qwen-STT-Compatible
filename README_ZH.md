@@ -415,9 +415,9 @@ ASR 分片统一使用 `ogg` 容器和 `libopus` 编码，不按原始文件扩�
 
 使用 Go 1.27.3 或更新版本构建。
 
-实时文件接口需要系统 `PATH` 中提供 `ffmpeg`。这个可执行文件与静态链接的预处理库相互独立，需要单独安装安全更新，包括 CVE-2026-107678 的 MOV `pssh` 修复。持续 PCM 的 WebSocket 入口不依赖 FFmpeg 可执行文件；8k 和 16k 重采样在 Go 中完成。
+实时文件接口需要系统 `PATH` 中提供 `ffmpeg`。这个可执行文件与静态链接的预处理库相互独立。持续 PCM 的 WebSocket 入口不依赖 FFmpeg 可执行文件；8k 和 16k 重采样在 Go 中完成。
 
-预处理库需要 `libav` build tag，并且需要 FFmpeg/libav 静态依赖。项目脚本会先下载 FFmpeg 8.1.3 和 Opus 1.5.2，并校验固定的 SHA-256，再委托当前 `go.mod` 中 `github.com/Joey-Kot/ASR-Audio-Preprocess` 依赖包提供的构建脚本校验签名、应用 CVE-2026-107678 补丁并编译：
+预处理库需要 `libav` build tag，并且需要 FFmpeg/libav 静态依赖。项目脚本会先下载未经修改的 FFmpeg 9.0.2 发布源码包和 Opus 1.5.2，并校验固定的 SHA-256，再委托当前 `go.mod` 中 `github.com/Joey-Kot/ASR-Audio-Preprocess` 依赖包提供的构建脚本校验签名并编译：
 
 ```bash
 ./scripts/bootstrap-static-audio-deps.sh

@@ -5,14 +5,14 @@ their complete license texts in `THIRD_PARTY_LICENSES/`.
 
 ## ASR-Audio-Preprocess
 
-- Version: v0.0.0-20261023044719-82196363aea0
+- Version: v0.0.0-20261024024023-ca5657ffb833
 - Source: https://github.com/Joey-Kot/ASR-Audio-Preprocess
 - License: GPL-3.0-or-later
 - Full license text: `LICENSE`
 
 ## FFmpeg
 
-- Version: 8.1.3 with the CVE-2026-107678 backport supplied by ASR-Audio-Preprocess
+- Version: 9.0.2
 - Source: https://ffmpeg.org/
 - License: LGPL-2.1-or-later for the distributed build. The delegated build
   scripts do not enable `--enable-gpl`, `--enable-version3`, or
@@ -44,7 +44,7 @@ their complete license texts in `THIRD_PARTY_LICENSES/`.
 
 Realtime file decoding uses a separately installed FFmpeg executable from
 `PATH`. Its license and security updates are managed by that installation;
-the statically linked FFmpeg fixes above do not update this executable.
+updates to the statically linked FFmpeg do not update this executable.
 
 ## Project License
 

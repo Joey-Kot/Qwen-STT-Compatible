@@ -415,9 +415,9 @@ Range validation for non-realtime retry and preprocessing concurrency settings o
 
 Build with Go 1.27.3 or newer.
 
-The realtime file endpoint requires `ffmpeg` on the system `PATH`. This executable is separate from the statically linked preprocessing library and needs its own security updates, including the MOV `pssh` fix for CVE-2026-107678. The continuous-PCM WebSocket endpoint does not require the FFmpeg executable; 8k and 16k resampling is implemented in Go.
+The realtime file endpoint requires `ffmpeg` on the system `PATH`. This executable is separate from the statically linked preprocessing library. The continuous-PCM WebSocket endpoint does not require the FFmpeg executable; 8k and 16k resampling is implemented in Go.
 
-The preprocessing library requires the `libav` build tag and static FFmpeg/libav dependencies. The project script downloads FFmpeg 8.1.3 and Opus 1.5.2 with pinned SHA-256 checksums, then delegates signature verification, the CVE-2026-107678 backport, and compilation to the build script provided by the `github.com/Joey-Kot/ASR-Audio-Preprocess` version in `go.mod`:
+The preprocessing library requires the `libav` build tag and static FFmpeg/libav dependencies. The project script downloads the unmodified FFmpeg 9.0.2 release archive and Opus 1.5.2 with pinned SHA-256 checksums, then delegates signature verification and compilation to the build script provided by the `github.com/Joey-Kot/ASR-Audio-Preprocess` version in `go.mod`:
 
 ```bash
 ./scripts/bootstrap-static-audio-deps.sh

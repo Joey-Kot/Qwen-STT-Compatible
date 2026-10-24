@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestAudioBuildStagesNonExecutableModuleScripts(t *testing.T) {
+func TestAudioBuildRunsNonExecutableModuleScripts(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("audio build integration test requires sh")
 	}
@@ -27,9 +27,9 @@ func TestAudioBuildStagesNonExecutableModuleScripts(t *testing.T) {
 			root := t.TempDir()
 			moduleDir := filepath.Join(root, "module cache")
 			binDir := filepath.Join(root, "bin")
-			buildDir := filepath.Join(root, "build staging")
+			buildDir := filepath.Join(root, "build temp")
 			outputDir := filepath.Join(root, "audio output")
-			for _, dir := range []string{filepath.Join(moduleDir, "scripts", "patches"), binDir, buildDir} {
+			for _, dir := range []string{filepath.Join(moduleDir, "scripts"), binDir, buildDir} {
 				if err := os.MkdirAll(dir, 0755); err != nil {
 					t.Fatal(err)
 				}
@@ -37,16 +37,9 @@ func TestAudioBuildStagesNonExecutableModuleScripts(t *testing.T) {
 			files := map[string]string{
 				tc.entry: `#!/bin/sh
 set -eu
-root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-"$root/scripts/apply-ffmpeg-security-patches.sh"
 printf '%s\n' "$SRC_DIR" "$PREFIX"
 exit "$AUDIO_TEST_EXIT_CODE"
 `,
-				"apply-ffmpeg-security-patches.sh": `#!/bin/sh
-set -eu
-test "$(cat "$(dirname -- "$0")/patches/fix.patch")" = "test patch"
-`,
-				"patches/fix.patch": "test patch\n",
 			}
 			for name, content := range files {
 				if err := os.WriteFile(filepath.Join(moduleDir, "scripts", name), []byte(content), 0444); err != nil {
@@ -95,7 +88,7 @@ esac
 			}
 			entries, err := os.ReadDir(buildDir)
 			if err != nil || len(entries) != 0 {
-				t.Fatalf("staging directory not cleaned: %v %v", entries, err)
+				t.Fatalf("unexpected temporary build files: %v %v", entries, err)
 			}
 		})
 	}
